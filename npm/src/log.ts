@@ -24,6 +24,7 @@ declare global {
 
 export type LogLevel = "off" | "error" | "warn" | "info" | "debug" | "trace";
 export type TelemetryEvent = { id: string; data?: any };
+export type LogEvent = { level: number; target: string; data: any[] };
 export type TelemetryCollector = (event: TelemetryEvent) => void;
 
 let telemetryCollector: TelemetryCollector | null = null;

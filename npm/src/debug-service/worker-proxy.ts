@@ -17,6 +17,7 @@ const requests: MethodMap<IDebugService> = {
   getBreakpoints: "request",
   getLocalVariables: "request",
   captureQuantumState: "request",
+  getCircuit: "request",
   getStackFrames: "request",
   evalContinue: "requestWithProgress",
   evalNext: "requestWithProgress",

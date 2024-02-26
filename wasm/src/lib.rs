@@ -3,7 +3,7 @@
 
 #![allow(non_snake_case)]
 
-use diagnostic::VSDiagnostic;
+use diagnostic::{interpret_errors_into_vs_diagnostics, VSDiagnostic};
 use katas::check_solution;
 use num_bigint::BigUint;
 use num_complex::Complex64;
@@ -117,6 +117,26 @@ pub fn get_estimates(sources: Vec<js_sys::Array>, params: &str) -> Result<String
         re::Error::Interpreter(_) => unreachable!("interpreter errors should be eval errors"),
         re::Error::Estimation(e) => e.to_string(),
     })
+}
+
+#[wasm_bindgen]
+pub fn get_circuit(sources: Vec<js_sys::Array>, entry: Option<String>) -> Result<JsValue, String> {
+    let sources = get_source_map(sources, entry);
+
+    let mut interpreter =
+        interpret::Interpreter::new(true, sources, PackageType::Exe, Profile::Base.into())
+            .map_err(interpret_errors_into_vs_diagnostics_json)?;
+
+    let circuit = interpreter
+        .circuit(None)
+        .map_err(interpret_errors_into_vs_diagnostics_json)?;
+
+    serde_wasm_bindgen::to_value(&circuit).map_err(|e| e.to_string())
+}
+
+fn interpret_errors_into_vs_diagnostics_json(errs: Vec<qsc::interpret::Error>) -> String {
+    serde_json::to_string(&interpret_errors_into_vs_diagnostics(&errs))
+        .expect("serializing errors to json should succeed (or should it?)")
 }
 
 #[wasm_bindgen]

@@ -10,7 +10,8 @@ export type QscEventData =
   | { type: "Message"; detail: string }
   | { type: "DumpMachine"; detail: Dump }
   | { type: "Result"; detail: Result }
-  | { type: "telemetry-event"; detail: TelemetryEvent };
+  | { type: "telemetry-event"; detail: TelemetryEvent }
+  | { type: "log"; detail: string };
 
 export type QscEvents = Event & QscEventData;
 

@@ -9,6 +9,8 @@ mod tests;
 #[cfg(test)]
 mod debugger_tests;
 
+use qsc_circuit::{Builder as CircuitBuilder, Config as CircuitConfig};
+pub use qsc_circuit::{Circuit, Operation};
 pub use qsc_eval::{
     debug::Frame,
     output::{self, GenericReceiver},
@@ -100,7 +102,7 @@ pub struct Interpreter {
     /// This ID is valid both for the FIR store and the `PackageStore`.
     source_package: PackageId,
     /// The default simulator backend.
-    sim: SparseSim,
+    sim: CircuitBuilder<SparseSim>,
     /// The quantum seed, if any. This is cached here so that it can be used in calls to
     /// `run_internal` which use a passed instance of the simulator instead of the one above.
     quantum_seed: Option<u64>,
@@ -147,7 +149,12 @@ impl Interpreter {
             fir_store,
             lowerer,
             env: Env::default(),
-            sim: SparseSim::new(),
+            sim: CircuitBuilder::with_backend(
+                CircuitConfig {
+                    no_qubit_reuse: capabilities.is_empty(),
+                },
+                SparseSim::new(),
+            ),
             quantum_seed: None,
             classical_seed: None,
             package: map_hir_package_to_fir(package_id),
@@ -273,6 +280,10 @@ impl Interpreter {
         self.sim.capture_quantum_state()
     }
 
+    pub fn get_circuit(&mut self) -> Circuit {
+        self.sim.snapshot()
+    }
+
     /// Performs QIR codegen using the given entry expression on a new instance of the environment
     /// and simulator but using the current compilation.
     pub fn qirgen(&mut self, expr: &str) -> Result<String, Vec<Error>> {
@@ -285,6 +296,26 @@ impl Interpreter {
         let mut out = GenericReceiver::new(&mut stdout);
 
         let val = self.run_with_sim(&mut sim, &mut out, expr)??;
+
+        Ok(sim.finish(&val))
+    }
+
+    pub fn circuit(&mut self, expr: Option<&str>) -> Result<Circuit, Vec<Error>> {
+        let base_profile = self.capabilities.is_empty();
+
+        let mut sink = std::io::sink();
+        let mut out = GenericReceiver::new(&mut sink);
+
+        // TODO: bad type parameter
+        let mut sim = CircuitBuilder::<SparseSim>::new(CircuitConfig {
+            no_qubit_reuse: base_profile,
+        });
+
+        let val = if let Some(expr) = expr {
+            self.run_with_sim(&mut sim, &mut out, expr)?
+        } else {
+            self.eval_entry_with_sim(&mut sim, &mut out)
+        }?;
 
         Ok(sim.finish(&val))
     }
@@ -461,6 +492,10 @@ impl Debugger {
         self.interpreter.sim.capture_quantum_state()
     }
 
+    pub fn circuit(&self) -> Circuit {
+        self.interpreter.sim.snapshot()
+    }
+
     #[must_use]
     pub fn get_breakpoints(&self, path: &str) -> Vec<BreakpointSpan> {
         let unit = self.source_package();
@@ -478,14 +513,7 @@ impl Debugger {
                 self.position_encoding,
             );
             collector.visit_package(package);
-            let mut spans: Vec<_> = collector
-                .statements
-                .iter()
-                .map(|bps| BreakpointSpan {
-                    id: bps.id,
-                    range: bps.range,
-                })
-                .collect();
+            let mut spans: Vec<_> = collector.statements.into_iter().collect();
 
             // Sort by start position (line first, column next)
             spans.sort_by_key(|s| (s.range.start.line, s.range.start.column));

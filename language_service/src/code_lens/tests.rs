@@ -15,7 +15,7 @@ use expect_test::{expect, Expect};
 fn check(source_with_markers: &str, expect: &Expect) {
     let (compilation, expected_code_lens_ranges) =
         compile_with_fake_stdlib_and_markers_no_cursor(source_with_markers);
-    let actual_code_lenses = get_code_lenses(&compilation, "<source>", Encoding::Utf8);
+    let mut actual_code_lenses = get_code_lenses(&compilation, "<source>", Encoding::Utf8);
 
     for expected_range in &expected_code_lens_ranges {
         assert!(
@@ -34,17 +34,13 @@ fn check(source_with_markers: &str, expect: &Expect) {
     }
 
     let actual = expected_code_lens_ranges
-        .iter()
+        .into_iter()
         .enumerate()
-        .map(|(i, r)| {
-            (
-                i,
-                actual_code_lenses
-                    .iter()
-                    .filter(|cl| cl.range == *r)
-                    .map(|cl| cl.command)
-                    .collect::<Vec<_>>(),
-            )
+        .map(move |(i, r)| {
+            actual_code_lenses.sort_by_key(|cl| cl.range == r);
+            let partition_point = actual_code_lenses.partition_point(|cl| cl.range != r);
+            let for_this_range = actual_code_lenses.drain(partition_point..);
+            (i, for_this_range.map(|cl| cl.command).collect::<Vec<_>>())
         })
         .collect::<Vec<_>>();
     expect.assert_debug_eq(&actual);
@@ -68,6 +64,7 @@ fn one_entrypoint() {
                         Histogram,
                         Estimate,
                         Debug,
+                        Circuit,
                     ],
                 ),
             ]
@@ -97,6 +94,7 @@ fn two_entrypoints() {
                         Histogram,
                         Estimate,
                         Debug,
+                        Circuit,
                     ],
                 ),
                 (
@@ -106,6 +104,7 @@ fn two_entrypoints() {
                         Histogram,
                         Estimate,
                         Debug,
+                        Circuit,
                     ],
                 ),
             ]

@@ -21,7 +21,7 @@ use qsc::{
     interpret::{
         self,
         output::{Error, Receiver},
-        Value,
+        Circuit, Operation, Value,
     },
     project::{FileSystem, Manifest, ManifestDescriptor},
     target::Profile,
@@ -170,6 +170,10 @@ impl Interpreter {
         StateDump(DisplayableState(state, qubit_count))
     }
 
+    fn dump_circuit(&mut self, py: Python) -> PyObject {
+        PyCircuit(self.interpreter.get_circuit()).into_py(py)
+    }
+
     fn run(
         &mut self,
         py: Python,
@@ -189,6 +193,13 @@ impl Interpreter {
     fn qir(&mut self, _py: Python, entry_expr: &str) -> PyResult<String> {
         match self.interpreter.qirgen(entry_expr) {
             Ok(qir) => Ok(qir),
+            Err(errors) => Err(QSharpError::new_err(format_errors(errors))),
+        }
+    }
+
+    fn circuit(&mut self, py: Python, entry_expr: &str) -> PyResult<PyObject> {
+        match self.interpreter.circuit(Some(entry_expr)) {
+            Ok(circuit) => Ok(PyCircuit(circuit).into_py(py)),
             Err(errors) => Err(QSharpError::new_err(format_errors(errors))),
         }
     }
@@ -218,6 +229,90 @@ impl Interpreter {
                     .join("\n"),
             )),
         }
+    }
+}
+
+struct PyCircuit(Circuit);
+struct PyOperation(Operation);
+
+impl IntoPy<PyObject> for PyCircuit {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let dict = PyDict::new(py);
+        let _ = dict.set_item(
+            "operations",
+            PyList::new(
+                py,
+                self.0
+                    .operations
+                    .into_iter()
+                    .map(|g| PyOperation(g).into_py(py)),
+            ),
+        );
+        let _ = dict.set_item(
+            "qubits",
+            PyList::new(
+                py,
+                self.0.qubits.into_iter().map(|q| {
+                    let qubit = PyDict::new(py);
+                    let _ = qubit.set_item("id", q.id);
+                    let _ = qubit.set_item("numChildren", q.num_children);
+                    qubit
+                }),
+            ),
+        );
+        dict.into_py(py)
+    }
+}
+
+impl IntoPy<PyObject> for PyOperation {
+    fn into_py(self, py: Python<'_>) -> PyObject {
+        let gate = PyDict::new(py);
+        let _ = gate.set_item("gate", self.0.gate);
+        let _ = gate.set_item("displayArgs", self.0.display_args);
+        let _ = gate.set_item("isControlled", self.0.is_controlled);
+        let _ = gate.set_item("isAdjoint", self.0.is_adjoint);
+        let _ = gate.set_item("isMeasurement", self.0.is_measurement);
+        let _ = gate.set_item(
+            "controls",
+            PyList::new(
+                py,
+                self.0.controls.into_iter().map(|r| {
+                    let register = PyDict::new(py);
+                    let _ = register.set_item("qId", r.q_id);
+                    let _ = register.set_item("type", r.r#type);
+                    if let Some(c_id) = r.c_id {
+                        let _ = register.set_item("cId", c_id);
+                    }
+                    register
+                }),
+            ),
+        );
+        let _ = gate.set_item(
+            "targets",
+            PyList::new(
+                py,
+                self.0.targets.into_iter().map(|r| {
+                    let register = PyDict::new(py);
+                    let _ = register.set_item("qId", r.q_id);
+                    let _ = register.set_item("type", r.r#type);
+                    if let Some(c_id) = r.c_id {
+                        let _ = register.set_item("cId", c_id);
+                    }
+                    register
+                }),
+            ),
+        );
+        let _ = gate.set_item(
+            "children",
+            PyList::new(
+                py,
+                self.0
+                    .children
+                    .into_iter()
+                    .map(|g| PyOperation(g).into_py(py)),
+            ),
+        );
+        gate.into_py(py)
     }
 }
 

@@ -51,6 +51,16 @@ function mapCodeLens(cl: ICodeLens): vscode.CodeLens {
       command = "qsharp-vscode.runEditorContents";
       tooltip = "Run program";
       break;
+    case "circuit":
+      title = "Circuit";
+      command = "qsharp-vscode.showCircuit";
+      tooltip = "Show circuit";
+      break;
+    case "operationCircuit":
+      title = "Circuit";
+      command = "qsharp-vscode.showCircuit";
+      tooltip = "Show circuit for this operation";
+      break;
     default:
       throw new Error(`Unknown code lens command: ${cl.command}`);
   }
@@ -58,7 +68,7 @@ function mapCodeLens(cl: ICodeLens): vscode.CodeLens {
   return new vscode.CodeLens(toVscodeRange(cl.range), {
     title,
     command,
-    arguments: cl.args,
+    arguments: [cl.args],
     tooltip,
   });
 }

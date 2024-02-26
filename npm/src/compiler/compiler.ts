@@ -24,6 +24,8 @@ export interface ICompiler {
   ): Promise<void>;
   getQir(sources: [string, string][]): Promise<string>;
   getEstimates(sources: [string, string][], params: string): Promise<string>;
+  getCircuit(sources: [string, string][], expr: string): Promise<object>;
+
   checkExerciseSolution(
     user_code: string,
     exercise_sources: string[],
@@ -75,6 +77,10 @@ export class Compiler implements ICompiler {
     params: string,
   ): Promise<string> {
     return this.wasm.get_estimates(sources, params);
+  }
+
+  async getCircuit(sources: [string, string][], expr: string): Promise<object> {
+    return this.wasm.get_circuit(sources, expr);
   }
 
   async getHir(code: string): Promise<string> {

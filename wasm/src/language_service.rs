@@ -278,6 +278,15 @@ impl LanguageService {
                     qsls::protocol::CodeLensCommand::Debug => ("debug", None),
                     qsls::protocol::CodeLensCommand::Run => ("run", None),
                     qsls::protocol::CodeLensCommand::Estimate => ("estimate", None),
+                    qsls::protocol::CodeLensCommand::Circuit => ("circuit", None),
+                    qsls::protocol::CodeLensCommand::OperationCircuit(args) => (
+                        "operationCircuit",
+                        Some(OperationCircuitParams {
+                            namespace: args.namespace,
+                            name: args.name,
+                            args: args.args,
+                        }),
+                    ),
                 };
                 CodeLens {
                     range,
@@ -405,14 +414,29 @@ serializable_type! {
         range: Range,
         command: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        args: Option<(String, String, String)>,
+        args: Option<OperationCircuitParams>,
     },
     r#"export interface ICodeLens {
         range: IRange;
-        command: "histogram" | "estimate" | "debug" | "run";
-        args?: [string, string, string];
+        command: "histogram" | "estimate" | "debug" | "run" | "circuit" | "operationCircuit";
+        args?: IOperationCircuitParams;
     }"#,
     ICodeLens
+}
+
+serializable_type! {
+    OperationCircuitParams,
+    {
+        namespace: String,
+        name: String,
+        args: Vec<usize>,
+    },
+    r#"export interface IOperationCircuitParams {
+        namespace: string;
+        name: string;
+        args: number[];
+    }"#,
+    IOperationCircuitParams
 }
 
 serializable_type! {

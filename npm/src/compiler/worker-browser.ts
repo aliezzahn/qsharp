@@ -16,6 +16,21 @@ function telemetryHandler(telemetry: TelemetryEvent) {
   });
 }
 
+function postLogMessage(level: number, target: string, ...args: any) {
+  let data = args;
+  try {
+    structuredClone(args);
+  } catch (e) {
+    // uncloneable object
+    data = ["unsupported log data from worker"];
+  }
+  self.postMessage({
+    messageType: "event",
+    type: "log-event",
+    detail: { level, target, data },
+  });
+}
+
 // This export should be assigned to 'self.onmessage' in a WebWorker
 export function messageHandler(e: MessageEvent) {
   const data = e.data;
@@ -33,7 +48,7 @@ export function messageHandler(e: MessageEvent) {
         wasm.initSync(data.wasmModule);
 
         // Set up logging and telemetry as soon as possible after instantiating
-        wasm.initLogging(log.logWithLevel, log.getLogLevel());
+        wasm.initLogging(postLogMessage, log.getLogLevel());
         log.onLevelChanged = (level) => wasm.setLogLevel(level);
 
         const compiler = new Compiler(wasm);

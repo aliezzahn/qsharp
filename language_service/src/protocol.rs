@@ -126,10 +126,19 @@ pub struct CodeLens {
     pub command: CodeLensCommand,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub enum CodeLensCommand {
     Histogram,
     Debug,
     Run,
     Estimate,
+    Circuit,
+    OperationCircuit(OperationCircuitParams),
+}
+
+#[derive(Debug)]
+pub struct OperationCircuitParams {
+    pub namespace: String,
+    pub name: String,
+    pub args: Vec<usize>, // dimensions
 }

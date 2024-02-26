@@ -36,6 +36,7 @@ impl DebugService {
         let source_map = get_source_map(sources, entry);
         let target = Profile::from_str(&target_profile)
             .unwrap_or_else(|_| panic!("Invalid target : {}", target_profile));
+
         match Debugger::new(source_map, target.into(), Encoding::Utf16) {
             Ok(debugger) => {
                 self.debugger = Some(debugger);
@@ -60,6 +61,11 @@ impl DebugService {
             .collect::<Vec<_>>();
 
         QuantumStateList { entries }.into()
+    }
+
+    pub fn get_circuit(&self) -> Result<JsValue, String> {
+        let circuit = self.debugger().circuit();
+        serde_wasm_bindgen::to_value(&circuit).map_err(|e| e.to_string())
     }
 
     pub fn get_stack_frames(&self) -> IStackFrameList {

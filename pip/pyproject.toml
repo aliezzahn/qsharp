@@ -27,3 +27,4 @@ build-backend = "maturin"
 
 [tool.maturin]
 module-name = "qsharp._native"
+profile = "dev"
