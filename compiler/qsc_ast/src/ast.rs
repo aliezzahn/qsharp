@@ -28,6 +28,9 @@ fn set_indentation<'a, 'b>(
 }
 
 /// The unique identifier for an AST node.
+/// This could be assigned or unassigned. If unassigned, the value will be `u32::MAX`.
+/// Assignment happens after symbol resolution. Use [NodeId::is_default] to check if the node
+/// has been assigned yet.
 #[derive(Clone, Copy, Debug)]
 pub struct NodeId(u32);
 
@@ -1263,6 +1266,9 @@ impl Display for QubitInitKind {
 }
 
 /// A path to a declaration.
+/// In the path `Microsoft.Quantum.Diagnostics.DumpMachine`,
+/// the `namespace` field would be `Microsoft.Quantum.Diagnostics`, and
+/// the `name` field would be `DumpMachine`.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Default)]
 pub struct Path {
     /// The node ID.
@@ -1270,7 +1276,7 @@ pub struct Path {
     /// The span.
     pub span: Span,
     /// The namespace.
-    pub namespace: Option<Box<Ident>>,
+    pub namespace: Option<Vec<Ident>>,
     /// The declaration name.
     pub name: Box<Ident>,
 }
