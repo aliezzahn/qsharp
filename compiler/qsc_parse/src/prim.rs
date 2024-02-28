@@ -81,12 +81,7 @@ pub(super) fn ident(s: &mut ParserContext) -> Result<Box<Ident>> {
 /// contains dots (`.`)
 pub(super) fn dot_ident(s: &mut ParserContext) -> Result<Box<Ident>> {
     let p = path(s)?;
-    let mut name = String::new();
-    if let Some(namespace) = p.namespace {
-        name.push_str(&namespace.name);
-        name.push('.');
-    }
-    name.push_str(&p.name.name);
+    let mut name = p.as_dot_ident();
 
     Ok(Box::new(Ident {
         id: p.id,
@@ -106,23 +101,15 @@ pub(super) fn path(s: &mut ParserContext) -> Result<Box<Path>> {
     }
 
     let name = parts.pop().expect("path should have at least one part");
-    let namespace = match (parts.first(), parts.last()) {
-        (Some(first), Some(last)) => {
-            let lo = first.span.lo;
-            let hi = last.span.hi;
-            Some(Box::new(Ident {
-                id: NodeId::default(),
-                span: Span { lo, hi },
-                name: join(parts.iter().map(|i| &i.name), ".").into(),
-            }))
-        }
-        _ => None,
-    };
 
     Ok(Box::new(Path {
         id: NodeId::default(),
         span: s.span(lo),
-        namespace,
+        namespace: if parts.is_empty() {
+            None
+        } else {
+            Some(parts.into_iter().map(|x| *x).collect())
+        },
         name,
     }))
 }

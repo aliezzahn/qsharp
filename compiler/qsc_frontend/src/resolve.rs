@@ -249,6 +249,8 @@ impl GlobalScope {
             NameKind::Ty => &self.tys,
             NameKind::Term => &self.terms,
         };
+        // TODO
+        todo!("after lunch investigate this");
         namespaces.get(namespace).and_then(|items| items.get(name))
     }
 }
@@ -988,12 +990,14 @@ fn resolve<'a>(
     globals: &GlobalScope,
     scopes: impl Iterator<Item = &'a Scope>,
     name: &Ident,
-    namespace: &Option<Box<Ident>>,
+    namespace: &Option<Vec<Ident>>,
 ) -> Result<Res, Error> {
     let scopes = scopes.collect::<Vec<_>>();
     let mut candidates = FxHashMap::default();
     let mut vars = true;
     let name_str = &(*name.name);
+    // TODO this is where we resolve namespaces recursively in the global scope
+    todo!();
     let namespace = namespace.as_ref().map_or("", |i| &i.name);
     for scope in scopes {
         if namespace.is_empty() {

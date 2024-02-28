@@ -1281,10 +1281,38 @@ pub struct Path {
     pub name: Box<Ident>,
 }
 
+impl Path {
+    /// This is used to reason about paths in the legacy manner, where
+    /// namespaces are just singular idents with dot tokens that happen
+    /// to be in them.
+    pub fn as_dot_ident(&self) -> String {
+        let maybe_namespace = self.namespace.as_ref().map(|x| {
+            x.iter()
+                .map(|ident| format!("{ident}"))
+                .collect::<Vec<_>>()
+                .join(".")
+        });
+        match maybe_namespace {
+            Some(ns) => format!("{}.{}", ns, self.name),
+            None => format!("{}", self.name),
+        }
+    }
+}
+
 impl Display for Path {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if let Some(ns) = &self.namespace {
-            write!(f, "Path {} {} ({}) ({})", self.id, self.span, ns, self.name)?;
+            write!(
+                f,
+                "Path {} {} ({}) ({})",
+                self.id,
+                self.span,
+                ns.iter()
+                    .map(|x| format!("{x}"))
+                    .collect::<Vec<_>>()
+                    .join("."),
+                self.name
+            )?;
         } else {
             write!(f, "Path {} {} ({})", self.id, self.span, self.name)?;
         }
