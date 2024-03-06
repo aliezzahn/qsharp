@@ -281,6 +281,16 @@ impl LanguageService {
                     qsls::protocol::CodeLensCommand::Debug => ("debug", None),
                     qsls::protocol::CodeLensCommand::Run => ("run", None),
                     qsls::protocol::CodeLensCommand::Estimate => ("estimate", None),
+                    qsls::protocol::CodeLensCommand::Circuit(args) => (
+                        "circuit",
+                        args.map(|args| OperationInfo {
+                            namespace: args.namespace,
+                            name: args.name,
+                            internal: args.internal,
+                            qubit_param_dimensions: args.qubit_param_dimensions,
+                            total_num_qubits: args.total_num_qubits,
+                        }),
+                    ),
                 };
                 CodeLens {
                     range,
@@ -408,14 +418,38 @@ serializable_type! {
         range: Range,
         command: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        args: Option<(String, String, String)>,
+        args: Option<OperationInfo>,
     },
-    r#"export interface ICodeLens {
+    r#"export type ICodeLens = {
         range: IRange;
         command: "histogram" | "estimate" | "debug" | "run";
-        args?: [string, string, string];
+    } | {
+        range: IRange;
+        command: "circuit";
+        args?: IOperationInfo
     }"#,
     ICodeLens
+}
+
+serializable_type! {
+    OperationInfo,
+    {
+        pub namespace: String,
+        pub name: String,
+        pub internal: bool,
+        #[serde(rename = "qubitParamDimensions")]
+        pub qubit_param_dimensions: Vec<u32>,
+        #[serde(rename = "totalNumQubits")]
+        pub total_num_qubits: u32,
+    },
+    r#"export interface IOperationInfo {
+        namespace: string;
+        name: string;
+        internal: boolean;
+        qubitParamDimensions: number[];
+        totalNumQubits: number;
+    }"#,
+    IOperationInfo
 }
 
 serializable_type! {

@@ -10,7 +10,8 @@ use crate::{
     qsc_utils::{into_range, span_contains},
 };
 use qsc::{
-    hir::{Attr, ItemKind},
+    circuit::operation_circuit_info,
+    hir::{Attr, ItemKind, Visibility},
     line_column::Encoding,
 };
 
@@ -31,39 +32,65 @@ pub(crate) fn get_code_lenses(
     // If there is more than one entrypoint, not our problem, we'll go ahead
     // and return code lenses for all. The duplicate entrypoint diagnostic
     // will be reported from elsewhere.
-    let entry_point_decls = user_unit.package.items.values().filter_map(|item| {
+    let decls = user_unit.package.items.values().filter_map(|item| {
         if span_contains(source_span, item.span.lo) {
             if let ItemKind::Callable(decl) = &item.kind {
-                if item.attrs.iter().any(|a| a == &Attr::EntryPoint) {
-                    return Some(decl);
+                if let Some(ItemKind::Namespace(ns, _)) = item
+                    .parent
+                    .and_then(|parent_id| user_unit.package.items.get(parent_id))
+                    .map(|parent| &parent.kind)
+                {
+                    if item.attrs.iter().any(|a| a == &Attr::EntryPoint) {
+                        return Some((decl, ns.name.to_string(), true, false));
+                    }
+                    return Some((
+                        decl,
+                        ns.name.to_string(),
+                        false,
+                        matches!(item.visibility, Visibility::Internal),
+                    ));
                 }
             }
         }
         None
     });
 
-    entry_point_decls
-        .flat_map(|decl| {
+    decls
+        .flat_map(|(decl, namespace, is_entry_point, internal)| {
             let range = into_range(position_encoding, decl.span, &user_unit.sources);
 
-            [
-                CodeLens {
-                    range,
-                    command: CodeLensCommand::Run,
-                },
-                CodeLens {
-                    range,
-                    command: CodeLensCommand::Histogram,
-                },
-                CodeLens {
-                    range,
-                    command: CodeLensCommand::Estimate,
-                },
-                CodeLens {
-                    range,
-                    command: CodeLensCommand::Debug,
-                },
-            ]
+            if is_entry_point {
+                vec![
+                    CodeLens {
+                        range,
+                        command: CodeLensCommand::Run,
+                    },
+                    CodeLens {
+                        range,
+                        command: CodeLensCommand::Histogram,
+                    },
+                    CodeLens {
+                        range,
+                        command: CodeLensCommand::Estimate,
+                    },
+                    CodeLens {
+                        range,
+                        command: CodeLensCommand::Debug,
+                    },
+                    CodeLens {
+                        range,
+                        command: CodeLensCommand::Circuit(None),
+                    },
+                ]
+            } else {
+                if let Some(args) = operation_circuit_info(decl, namespace, internal) {
+                    return vec![CodeLens {
+                        range,
+                        command: CodeLensCommand::Circuit(Some(args)),
+                    }];
+                }
+                vec![]
+            }
         })
         .collect()
 }

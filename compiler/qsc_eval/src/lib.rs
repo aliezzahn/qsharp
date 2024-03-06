@@ -101,6 +101,10 @@ pub enum Error {
     #[diagnostic(code("Qsc.Eval.ReleasedQubitNotZero"))]
     ReleasedQubitNotZero(usize, #[label("Qubit{0}")] PackageSpan),
 
+    #[error("Result comparison is unsupported for this backend")]
+    #[diagnostic(code("Qsc.Eval.ResultComparisonUnsupported"))]
+    ResultComparisonUnsupported(#[label("cannot compare result")] PackageSpan),
+
     #[error("name is not bound")]
     #[diagnostic(code("Qsc.Eval.UnboundName"))]
     UnboundName(#[label] PackageSpan),
@@ -140,6 +144,7 @@ impl Error {
             | Error::QubitsNotSeparable(span)
             | Error::RangeStepZero(span)
             | Error::ReleasedQubitNotZero(_, span)
+            | Error::ResultComparisonUnsupported(span)
             | Error::UnboundName(span)
             | Error::UnknownIntrinsic(_, span)
             | Error::UnsupportedIntrinsicType(_, span)
@@ -1022,6 +1027,15 @@ impl State {
             BinOp::Eq => {
                 let rhs_val = self.pop_val();
                 let lhs_val = self.pop_val();
+                if let Value::Result(val::Result::Id(_)) = rhs_val {
+                    // Comparison of result ids is nonsensical, so we prevent it.
+                    // This code path is reachable for the circuit builder backend
+                    // since we don't currently do runtime capability analysis
+                    // to prevent executing programs that do result comparisons.
+                    return Err(Error::ResultComparisonUnsupported(
+                        self.to_global_span(span),
+                    ));
+                }
                 self.push_val(Value::Bool(lhs_val == rhs_val));
             }
             BinOp::Exp => self.eval_binop_with_error(span, eval_binop_exp)?,
@@ -1034,6 +1048,15 @@ impl State {
             BinOp::Neq => {
                 let rhs_val = self.pop_val();
                 let lhs_val = self.pop_val();
+                if let Value::Result(val::Result::Id(_)) = rhs_val {
+                    // Comparison of result ids is nonsensical, so we prevent it.
+                    // This code path is reachable for the circuit builder backend
+                    // since we don't currently do runtime capability analysis
+                    // to prevent executing programs that do result comparisons.
+                    return Err(Error::ResultComparisonUnsupported(
+                        self.to_global_span(span),
+                    ));
+                }
                 self.push_val(Value::Bool(lhs_val != rhs_val));
             }
             BinOp::OrB => self.eval_binop_simple(eval_binop_orb),

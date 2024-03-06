@@ -46,6 +46,7 @@ import {
 } from "../telemetry";
 import { getRandomGuid } from "../utils";
 import { getTarget } from "../config";
+import { sendMessageToPanel } from "../webviewPanel";
 
 const ErrorProgramHasErrors =
   "program contains compile errors(s): cannot run. See debug console for more details.";
@@ -301,27 +302,47 @@ export class QscDebugSession extends LoggingDebugSession {
   }
 
   private async eval_step(step: () => Promise<IStructStepResult>) {
-    await step().then(
-      async (result) => {
-        if (result.id == StepResultId.BreakpointHit) {
-          const evt = new StoppedEvent(
-            "breakpoint",
-            QscDebugSession.threadID,
-          ) as DebugProtocol.StoppedEvent;
-          evt.body.hitBreakpointIds = [result.value];
-          log.trace(`raising breakpoint event`);
-          this.sendEvent(evt);
-        } else if (result.id == StepResultId.Return) {
-          await this.endSession(`ending session`, 0);
-        } else {
-          log.trace(`step result: ${result.id} ${result.value}`);
-          this.sendEvent(new StoppedEvent("step", QscDebugSession.threadID));
-        }
-      },
-      (error) => {
-        this.endSession(`ending session due to error: ${error}`, 1);
-      },
-    );
+    let result: IStructStepResult;
+    try {
+      result = await step();
+    } catch (error) {
+      await this.endSession(`ending session due to error: ${error}`, 1);
+      log.info(
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        `ending session - error: ${error} ${error.stack} ${error.toString()}`,
+      );
+      return;
+    }
+
+    if (result.id == StepResultId.Return) {
+      log.info("ending session - return");
+      await this.endSession(`ending session`, 0);
+      return;
+    }
+
+    const circuit = await this.debugService.getCircuit();
+    log.info("stopped with circuit: " + JSON.stringify(circuit));
+    const message = {
+      command: "circuit",
+      circuit,
+      title: "Q# circuit",
+    };
+    sendMessageToPanel("circuit", false, message);
+    log.info("updated panel");
+
+    if (result.id == StepResultId.BreakpointHit) {
+      const evt = new StoppedEvent(
+        "breakpoint",
+        QscDebugSession.threadID,
+      ) as DebugProtocol.StoppedEvent;
+      evt.body.hitBreakpointIds = [result.value];
+      log.trace(`raising breakpoint event`);
+      this.sendEvent(evt);
+    } else {
+      log.trace(`step result: ${result.id} ${result.value}`);
+      this.sendEvent(new StoppedEvent("step", QscDebugSession.threadID));
+    }
   }
 
   private async continue(): Promise<void> {

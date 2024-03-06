@@ -40,6 +40,7 @@ export function registerQSharpNotebookHandlers() {
   subscriptions.push(
     vscode.workspace.onDidChangeNotebookDocument((event) => {
       if (event.notebook.notebookType === jupyterNotebookType) {
+        event.notebook;
         // change.document will be undefined if the cell contents did not change -- filter those out.
         const changedCells = event.cellChanges
           .filter((change) => change.document)

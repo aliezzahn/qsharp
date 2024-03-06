@@ -9,13 +9,8 @@ mod tests;
 #[cfg(test)]
 mod debugger_tests;
 
-pub use qsc_eval::{
-    debug::Frame,
-    output::{self, GenericReceiver},
-    val::Result,
-    val::Value,
-    StepAction, StepResult,
-};
+#[cfg(test)]
+mod circuit_tests;
 
 use crate::{
     error::{self, WithStack},
@@ -25,6 +20,10 @@ use debug::format_call_stack;
 use miette::Diagnostic;
 use num_bigint::BigUint;
 use num_complex::Complex;
+use qsc_circuit::{
+    operations::{operation_circuit_entry_expr, OperationInfo},
+    Builder as CircuitBuilder, Circuit, Config as CircuitConfig,
+};
 use qsc_codegen::qir_base::BaseProfSim;
 use qsc_data_structures::{
     language_features::LanguageFeatures,
@@ -32,11 +31,17 @@ use qsc_data_structures::{
     span::Span,
 };
 use qsc_eval::{
-    backend::{Backend, SparseSim},
+    backend::{Backend, Chain as BackendChain, SparseSim},
     debug::{map_fir_package_to_hir, map_hir_package_to_fir},
     output::Receiver,
-    val::{self},
-    Env, EvalId, State, VariableInfo,
+    val, Env, EvalId, State, VariableInfo,
+};
+pub use qsc_eval::{
+    debug::Frame,
+    output::{self, GenericReceiver},
+    val::Result,
+    val::Value,
+    StepAction, StepResult,
 };
 use qsc_fir::fir::{self, Global, PackageStoreLookup};
 use qsc_fir::{
@@ -78,6 +83,10 @@ pub enum Error {
     #[error("unsupported runtime capabilities for code generation")]
     #[diagnostic(code("Qsc.Interpret.UnsupportedRuntimeCapabilities"))]
     UnsupportedRuntimeCapabilities,
+    #[error("cannot generate circuit for an internal item")]
+    #[diagnostic(code("Qsc.Interpret.NoCircuitForInternal"))]
+    #[diagnostic(help("remove the internal keyword to generate a circuit for this callable"))]
+    NoCircuitForInternal,
 }
 
 /// A Q# interpreter.
@@ -102,7 +111,7 @@ pub struct Interpreter {
     /// This ID is valid both for the FIR store and the `PackageStore`.
     source_package: PackageId,
     /// The default simulator backend.
-    sim: SparseSim,
+    sim: BackendChain<SparseSim, CircuitBuilder>,
     /// The quantum seed, if any. This is cached here so that it can be used in calls to
     /// `run_internal` which use a passed instance of the simulator instead of the one above.
     quantum_seed: Option<u64>,
@@ -149,7 +158,12 @@ impl Interpreter {
             fir_store,
             lowerer,
             env: Env::default(),
-            sim: SparseSim::new(),
+            sim: BackendChain::new(
+                SparseSim::new(),
+                CircuitBuilder::new(CircuitConfig {
+                    no_qubit_reuse: capabilities.is_empty(),
+                }),
+            ),
             quantum_seed: None,
             classical_seed: None,
             package: map_hir_package_to_fir(package_id),
@@ -275,6 +289,10 @@ impl Interpreter {
         self.sim.capture_quantum_state()
     }
 
+    pub fn get_circuit(&self) -> Circuit {
+        self.sim.chained.snapshot()
+    }
+
     /// Performs QIR codegen using the given entry expression on a new instance of the environment
     /// and simulator but using the current compilation.
     pub fn qirgen(&mut self, expr: &str) -> std::result::Result<String, Vec<Error>> {
@@ -287,6 +305,34 @@ impl Interpreter {
         let mut out = GenericReceiver::new(&mut stdout);
 
         let val = self.run_with_sim(&mut sim, &mut out, expr)??;
+
+        Ok(sim.finish(&val))
+    }
+
+    pub fn circuit(&mut self, args: CircuitArgs) -> std::result::Result<Circuit, Vec<Error>> {
+        let expr = match args {
+            CircuitArgs::Operation(args) => {
+                if args.internal {
+                    return Err(vec![Error::NoCircuitForInternal]);
+                }
+                Some(operation_circuit_entry_expr(&args))
+            }
+            CircuitArgs::EntryExpr(expr) => Some(expr),
+            CircuitArgs::EntryPoint => None,
+        };
+
+        let no_qubit_reuse = self.capabilities.is_empty();
+
+        let mut sink = std::io::sink();
+        let mut out = GenericReceiver::new(&mut sink);
+
+        let mut sim = CircuitBuilder::new(CircuitConfig { no_qubit_reuse });
+
+        let val = if let Some(expr) = expr {
+            self.run_with_sim(&mut sim, &mut out, &expr)?
+        } else {
+            self.eval_entry_with_sim(&mut sim, &mut out)
+        }?;
 
         Ok(sim.finish(&val))
     }
@@ -346,6 +392,12 @@ impl Interpreter {
         self.lines += 1;
         label
     }
+}
+
+pub enum CircuitArgs {
+    Operation(OperationInfo),
+    EntryExpr(String),
+    EntryPoint,
 }
 
 /// A debugger that enables step-by-step evaluation of code
@@ -467,6 +519,10 @@ impl Debugger {
         self.interpreter.sim.capture_quantum_state()
     }
 
+    pub fn circuit(&self) -> Circuit {
+        self.interpreter.get_circuit()
+    }
+
     #[must_use]
     pub fn get_breakpoints(&self, path: &str) -> Vec<BreakpointSpan> {
         let unit = self.source_package();
@@ -483,14 +539,7 @@ impl Debugger {
                 self.position_encoding,
             );
             collector.visit_package(package);
-            let mut spans: Vec<_> = collector
-                .statements
-                .iter()
-                .map(|bps| BreakpointSpan {
-                    id: bps.id,
-                    range: bps.range,
-                })
-                .collect();
+            let mut spans: Vec<_> = collector.statements.into_iter().collect();
 
             // Sort by start position (line first, column next)
             spans.sort_by_key(|s| (s.range.start.line, s.range.start.column));

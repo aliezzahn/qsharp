@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::{
+    circuit::PyCircuit,
     displayable_output::{DisplayableOutput, DisplayableState},
     fs::file_system,
 };
@@ -21,7 +22,7 @@ use qsc::{
     interpret::{
         self,
         output::{Error, Receiver},
-        Value,
+        CircuitArgs, Value,
     },
     project::{FileSystem, Manifest, ManifestDescriptor},
     target::Profile,
@@ -38,6 +39,7 @@ fn _native(py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Pauli>()?;
     m.add_class::<Output>()?;
     m.add_class::<StateDump>()?;
+    m.add_class::<PyCircuit>()?;
     m.add_function(wrap_pyfunction!(physical_estimates, m)?)?;
     m.add("QSharpError", py.get_type::<QSharpError>())?;
 
@@ -184,6 +186,10 @@ impl Interpreter {
         StateDump(DisplayableState(state, qubit_count))
     }
 
+    fn dump_circuit(&mut self, py: Python) -> PyObject {
+        PyCircuit(self.interpreter.get_circuit()).into_py(py)
+    }
+
     fn run(
         &mut self,
         py: Python,
@@ -203,6 +209,16 @@ impl Interpreter {
     fn qir(&mut self, _py: Python, entry_expr: &str) -> PyResult<String> {
         match self.interpreter.qirgen(entry_expr) {
             Ok(qir) => Ok(qir),
+            Err(errors) => Err(QSharpError::new_err(format_errors(errors))),
+        }
+    }
+
+    fn circuit(&mut self, py: Python, entry_expr: &str) -> PyResult<PyObject> {
+        match self
+            .interpreter
+            .circuit(CircuitArgs::EntryExpr(entry_expr.into()))
+        {
+            Ok(circuit) => Ok(PyCircuit(circuit).into_py(py)),
             Err(errors) => Err(QSharpError::new_err(format_errors(errors))),
         }
     }

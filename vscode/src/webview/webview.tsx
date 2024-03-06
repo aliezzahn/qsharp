@@ -6,7 +6,12 @@
 const vscodeApi = acquireVsCodeApi();
 
 import { render } from "preact";
-import { EstimatesPanel, Histogram, type ReData } from "qsharp-lang/ux";
+import {
+  CircuitPanel,
+  EstimatesPanel,
+  Histogram,
+  type ReData,
+} from "qsharp-lang/ux";
 import { HelpPage } from "./help";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -38,11 +43,18 @@ type EstimatesState = {
   };
 };
 
+type CircuitState = {
+  viewType: "circuit";
+  title: string;
+  circuit: object;
+};
+
 type State =
   | { viewType: "loading" }
   | { viewType: "help" }
   | HistogramState
-  | EstimatesState;
+  | EstimatesState
+  | CircuitState;
 const loadingState: State = { viewType: "loading" };
 const helpState: State = { viewType: "help" };
 let state: State = loadingState;
@@ -101,6 +113,23 @@ function onMessage(event: any) {
     case "help":
       state = helpState;
       break;
+    case "circuit":
+      {
+        if (
+          !message.circuit ||
+          typeof message.circuit !== "object" ||
+          typeof message.title !== "string"
+        ) {
+          console.error("No circuit in message: ", message);
+          return;
+        }
+        state = {
+          viewType: "circuit",
+          title: message.title,
+          circuit: message.circuit,
+        };
+      }
+      break;
     default:
       console.error("Unknown command: ", message.command);
       return;
@@ -154,6 +183,13 @@ function App({ state }: { state: State }) {
           colors={[]}
           runNames={[]}
         />
+      );
+    case "circuit":
+      return (
+        <CircuitPanel
+          title={state.title}
+          circuit={state.circuit}
+        ></CircuitPanel>
       );
     case "help":
       return <HelpPage />;

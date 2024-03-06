@@ -21,6 +21,8 @@ import { isQsharpDocument } from "./common";
 import { loadProject } from "./projectSystem";
 import { EventType, sendTelemetryEvent } from "./telemetry";
 import { getRandomGuid } from "./utils";
+import type { IOperationInfo } from "../../npm/lib/web/qsc_wasm";
+import { getTarget } from "./config";
 
 const QSharpWebViewType = "qsharp-webview";
 const compilerRunTimeoutMs = 1000 * 60 * 5; // 5 minutes
@@ -368,9 +370,61 @@ export function registerWebViewCommands(context: ExtensionContext) {
       }
     }),
   );
+
+  context.subscriptions.push(
+    commands.registerCommand(
+      "qsharp-vscode.showCircuit",
+      async (operation?: IOperationInfo) => {
+        const editor = window.activeTextEditor;
+        if (!editor || !isQsharpDocument(editor.document)) {
+          throw new Error("The currently active window is not a Q# file");
+        }
+
+        sendMessageToPanel("circuit", true, undefined);
+
+        // Start the worker, run the code, and send the results to the webview
+        const worker = getCompilerWorker(compilerWorkerScriptPath);
+        const compilerTimeout = setTimeout(() => {
+          log.info("terminating circuit worker due to timeout");
+          worker.terminate(); // Confirm: Does the 'terminate' in the finally below error if this happens?
+        }, compilerRunTimeoutMs);
+        try {
+          let title;
+          const targetProfile = getTarget();
+          const sources = await loadProject(editor.document.uri);
+          if (operation) {
+            title = `${operation.name} with ${operation.totalNumQubits} input qubits`;
+          } else {
+            title = editor.document.uri.path.split("/").pop() || "Circuit";
+          }
+
+          const circuit = await worker.getCircuit(
+            sources,
+            targetProfile,
+            operation,
+          );
+
+          clearTimeout(compilerTimeout);
+
+          const message = {
+            command: "circuit",
+            circuit,
+            title,
+          };
+          sendMessageToPanel("circuit", false, message);
+        } catch (e: any) {
+          log.error("Circuit error. ", e.toString());
+          throw new Error("Run failed");
+        } finally {
+          log.info("terminating circuit worker");
+          worker.terminate();
+        }
+      },
+    ),
+  );
 }
 
-type PanelType = "histogram" | "estimates" | "help";
+type PanelType = "histogram" | "estimates" | "help" | "circuit";
 
 const panelTypeToPanel: Record<
   PanelType,
@@ -378,10 +432,11 @@ const panelTypeToPanel: Record<
 > = {
   histogram: { title: "Q# Histogram", panel: undefined, state: {} },
   estimates: { title: "Q# Estimates", panel: undefined, state: {} },
+  circuit: { title: "Q# Circuit", panel: undefined, state: {} },
   help: { title: "Q# Help", panel: undefined, state: {} },
 };
 
-function sendMessageToPanel(
+export function sendMessageToPanel(
   panelType: PanelType,
   reveal: boolean,
   message: any,
@@ -469,10 +524,10 @@ export class QSharpWebViewPanel {
 
   sendMessage(message: any) {
     if (this._ready) {
-      log.debug("Sending message to webview", message);
+      log.trace("Sending message to webview", message);
       this.panel.webview.postMessage(message);
     } else {
-      log.debug("Queuing message to webview", message);
+      log.trace("Queuing message to webview", message);
       this._queuedMessages.push(message);
     }
   }
@@ -510,6 +565,7 @@ export class QSharpViewViewPanelSerializer implements WebviewPanelSerializer {
     if (
       panelType !== "estimates" &&
       panelType !== "histogram" &&
+      panelType !== "circuit" &&
       panelType !== "help"
     ) {
       // If it was loading when closed, that's fine
