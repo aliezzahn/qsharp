@@ -486,8 +486,11 @@ struct AstPath<'a> {
 
 impl<'a> Display for AstPath<'a> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+
         match self.path.namespace.as_ref() {
-            Some(ns) => write!(f, "{ns}.{}", self.path.name.name),
+            Some(ns) => {
+                let ns = ns.into_iter().map(|ns| ns.name.clone()).collect::<Vec<_>>().join(".");
+                write!(f, "{ns}.{}", self.path.name.name) },
             None => write!(f, "{}", self.path.name.name),
         }
     }

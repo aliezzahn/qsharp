@@ -46,6 +46,9 @@ pub enum Res {
     PrimTy(Prim),
     /// The unit type.
     UnitTy,
+    /// A namespace
+    /// TODO "namespace ID"?
+    Namespace(FxHashMap<ItemName, GlobalScopeRes>)
 }
 
 #[derive(Clone, Debug, Diagnostic, Error)]
@@ -109,6 +112,12 @@ pub(super) enum Error {
 }
 
 #[derive(Debug, Clone)]
+enum ScopeRes {
+    Namespace(ItemId),
+    Term(ItemId),
+    Ty(ItemId),
+}
+#[derive(Debug, Clone)]
 pub struct Scope {
     /// The span that the scope applies to. For callables and namespaces, this includes
     /// the entire callable / namespace declaration. For blocks, this includes the braces.
@@ -116,10 +125,7 @@ pub struct Scope {
     kind: ScopeKind,
     /// Open statements. The key is the namespace name or alias.
     opens: FxHashMap<Rc<str>, Vec<Open>>,
-    /// Local newtype declarations.
-    tys: FxHashMap<Rc<str>, ItemId>,
-    /// Local callable and newtype declarations.
-    terms: FxHashMap<Rc<str>, ItemId>,
+    items: FxHashMap<NamespaceName, ScopeRes>,
     /// Local variables, including callable parameters, for loop bindings, etc.
     /// The u32 is the `valid_at` offset - the lowest offset at which the variable name is available.
     /// It's used to determine which variables are visible at a specific offset in the scope.
@@ -133,24 +139,60 @@ pub struct Scope {
 }
 
 impl Scope {
+    pub fn tys(&self) -> FxHashMap<Rc<str>, ItemId> {
+        self.items
+            .iter()
+            .filter_map(|(name, res)| {
+                if let ScopeRes::Ty(res) = res {
+                    Some((Rc::clone(name), res.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+    pub fn terms(&self) -> FxHashMap<Rc<str>, ItemId> {
+        self.items
+            .iter()
+            .filter_map(|(name, res)| {
+                if let ScopeRes::Term(res) = res {
+                    Some((Rc::clone(name), res.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+    pub fn namespaces(&self) -> FxHashMap<Rc<str>, ItemId> {
+        self.items
+            .iter()
+            .filter_map(|(name, res)| {
+                if let ScopeRes::Namespace(res) = res {
+                    Some((Rc::clone(name), res.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
     fn new(kind: ScopeKind, span: Span) -> Self {
         Self {
             span,
             kind,
             opens: FxHashMap::default(),
-            tys: FxHashMap::default(),
-            terms: FxHashMap::default(),
+            items: FxHashMap::default(),
             vars: FxHashMap::default(),
             ty_vars: FxHashMap::default(),
         }
     }
 
-    fn item(&self, kind: NameKind, name: &str) -> Option<&ItemId> {
+    fn item(&self, kind: NameKind, name: &str) -> Option<ItemId> {
         let items = match kind {
-            NameKind::Ty => &self.tys,
-            NameKind::Term => &self.terms,
+            NameKind::Ty => self.tys(),
+            NameKind::Term => self.terms(),
+            NameKind::Namespace => self.namespaces(),
         };
-        items.get(name)
+        items.get(name).cloned()
     }
 }
 
@@ -235,23 +277,76 @@ pub enum LocalKind {
     Var(NodeId),
 }
 
+type NamespaceName = Rc<str>;
+type ItemName = Rc<str>;
+
+#[derive(Clone, Debug)]
+enum GlobalScopeRes {
+    Ty(Res),
+    Term(Res),
+    Namespace(Res),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct GlobalScope {
-    tys: FxHashMap<Rc<str>, FxHashMap<Rc<str>, Res>>,
-    terms: FxHashMap<Rc<str>, FxHashMap<Rc<str>, Res>>,
+    items: FxHashMap<NamespaceName, FxHashMap<ItemName, GlobalScopeRes>>,
     namespaces: FxHashSet<Rc<str>>,
     intrinsics: FxHashSet<Rc<str>>,
 }
 
 impl GlobalScope {
-    fn get(&self, kind: NameKind, namespace: &str, name: &str) -> Option<&Res> {
-        let namespaces = match kind {
-            NameKind::Ty => &self.tys,
-            NameKind::Term => &self.terms,
+    pub fn tys(& self, namespace: &str) -> FxHashMap<Rc<str>, Res> {
+        match self.items.get(&Rc::from(namespace)) {
+            Some(items) => items
+                .iter()
+                .filter_map(|(name, res)| {
+                    if let GlobalScopeRes::Ty(res) = res {
+                        Some((Rc::clone(name), res.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            None => FxHashMap::default(),
+        }
+    }
+    pub fn terms(& self, namespace: &str) -> FxHashMap<Rc<str>, Res> {
+        match self.items.get(&Rc::from(namespace)) {
+            Some(items) => items
+                .iter()
+                .filter_map(|(name, res)| {
+                    if let GlobalScopeRes::Term(res) = res {
+                        Some((Rc::clone(name), res.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            None => FxHashMap::default(),
+        }
+    }
+    pub fn namespaces(& self, namespace: &str) -> FxHashMap<NamespaceName, FxHashMap<ItemName, GlobalScopeRes>> {
+        match self.items.get(&Rc::from(namespace)) {
+            Some(items) => items
+                .iter()
+                .filter_map(|(name, res)| {
+                    if let GlobalScopeRes::Namespace(res) = res {
+                        Some((Rc::clone(name), res.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            None => FxHashMap::default(),
+        }
+    }
+    fn get(&self, kind: NameKind, namespace: &str, name: &str) -> Option<Res> {
+        let items = match kind {
+            NameKind::Ty => self.tys(namespace),
+            NameKind::Term => self.terms(namespace),
+            NameKind::Namespace => self.namespaces(namespace)
         };
-        // TODO
-        todo!("after lunch investigate this");
-        namespaces.get(namespace).and_then(|items| items.get(name))
+        items.get(name).cloned()
     }
 }
 
@@ -266,6 +361,7 @@ enum ScopeKind {
 enum NameKind {
     Ty,
     Term,
+    Namespace,
 }
 
 #[derive(Debug, Clone)]
@@ -494,8 +590,7 @@ impl Resolver {
                     ),
                 );
                 self.current_scope_mut()
-                    .terms
-                    .insert(Rc::clone(&decl.name.name), id);
+                    .items.insert(Rc::clone(&decl.name.name), ScopeRes::Term(id));
             }
             ast::ItemKind::Ty(name, _) => {
                 let id = intrapackage(assigner.next_item());
@@ -507,8 +602,8 @@ impl Resolver {
                     ),
                 );
                 let scope = self.current_scope_mut();
-                scope.tys.insert(Rc::clone(&name.name), id);
-                scope.terms.insert(Rc::clone(&name.name), id);
+                scope.items.insert(Rc::clone(&name.name), ScopeRes::Ty(id));
+                scope.items.insert(Rc::clone(&name.name), ScopeRes::Term(id));
             }
             ast::ItemKind::Err => {}
         }
@@ -763,8 +858,7 @@ impl GlobalTable {
         Self {
             names: IndexMap::new(),
             scope: GlobalScope {
-                tys,
-                terms: FxHashMap::default(),
+                items: FxHashMap::default(),
                 namespaces: FxHashSet::default(),
                 intrinsics: FxHashSet::default(),
             },
@@ -804,18 +898,18 @@ impl GlobalTable {
             match (global.kind, global.visibility) {
                 (global::Kind::Ty(ty), hir::Visibility::Public) => {
                     self.scope
-                        .tys
+                        .items
                         .entry(global.namespace)
                         .or_default()
-                        .insert(global.name, Res::Item(ty.id, global.status));
+                        .insert(global.name, GlobalScopeRes::Ty(Res::Item(ty.id, global.status)));
                 }
                 (global::Kind::Term(term), visibility) => {
                     if visibility == hir::Visibility::Public {
                         self.scope
-                            .terms
+                            .items
                             .entry(global.namespace)
                             .or_default()
-                            .insert(global.name.clone(), Res::Item(term.id, global.status));
+                            .insert(global.name.clone(), GlobalScopeRes::Term(Res::Item(term.id, global.status)));
                     }
                     if term.intrinsic {
                         self.scope.intrinsics.insert(global.name);
@@ -914,7 +1008,7 @@ fn bind_global_item(
             names.insert(decl.name.id, res);
             let mut errors = Vec::new();
             match scope
-                .terms
+                .items
                 .entry(Rc::clone(namespace))
                 .or_default()
                 .entry(Rc::clone(&decl.name.name))
@@ -925,7 +1019,7 @@ fn bind_global_item(
                     decl.name.span,
                 )),
                 Entry::Vacant(entry) => {
-                    entry.insert(res);
+                    entry.insert(GlobalScopeRes::Term(res));
                 }
             }
 
@@ -947,26 +1041,23 @@ fn bind_global_item(
             let status = ItemStatus::from_attrs(&ast_attrs_as_hir_attrs(item.attrs.as_ref()));
             let res = Res::Item(item_id, status);
             names.insert(name.id, res);
-            match (
+            match
                 scope
-                    .terms
+                    .items
                     .entry(Rc::clone(namespace))
                     .or_default()
-                    .entry(Rc::clone(&name.name)),
-                scope
-                    .tys
-                    .entry(Rc::clone(namespace))
-                    .or_default()
-                    .entry(Rc::clone(&name.name)),
-            ) {
-                (Entry::Occupied(_), _) | (_, Entry::Occupied(_)) => Err(vec![Error::Duplicate(
+                    .entry(Rc::clone(&name.name))
+             {
+                Entry::Occupied(_)=> Err(vec![Error::Duplicate(
                     name.name.to_string(),
                     namespace.to_string(),
                     name.span,
                 )]),
-                (Entry::Vacant(term_entry), Entry::Vacant(ty_entry)) => {
-                    term_entry.insert(res);
-                    ty_entry.insert(res);
+                Entry::Vacant(entry) => {
+                    // entry.insert(GlobalScopeRes::Term(res));
+                    // TODO This will need some work -- we might need to generate the term on
+                    // the fly if we find an item
+                    entry.insert(GlobalScopeRes::Ty(res));
                     Ok(())
                 }
             }
@@ -985,6 +1076,30 @@ fn decl_is_intrinsic(decl: &ast::CallableDecl) -> bool {
     }
 }
 
+impl GlobalScope {
+    fn resolve_namespace(&self, namespace: &Vec<Ident>) -> FxHashMap<ItemName, GlobalScopeRes> {
+        let mut namespace = namespace.into_iter();
+        // grab the first scope
+        let first = namespace.next().expect("namespace should not be empty");
+        // get the items within the first namespace in the path
+        let mut items = self.items.get(&first.name).cloned().unwrap_or_default();
+        // for all the following components in the namespace name, iteratively resolve the namespace
+        for ident in namespace {
+            if let Some(res) = items.get(&ident.name) {
+                match res {
+                    GlobalScopeRes::Namespace(res) => {
+                        items = res.clone()
+                    }
+                    _ => return FxHashMap::default(),
+                }
+            } else {
+                return FxHashMap::default();
+            }
+        }
+        items
+    }
+}
+
 fn resolve<'a>(
     kind: NameKind,
     globals: &GlobalScope,
@@ -996,9 +1111,13 @@ fn resolve<'a>(
     let mut candidates = FxHashMap::default();
     let mut vars = true;
     let name_str = &(*name.name);
-    // TODO this is where we resolve namespaces recursively in the global scope
-    todo!();
-    let namespace = namespace.as_ref().map_or("", |i| &i.name);
+
+    // If a namespace is provided, recursively resolve it and use the result as the namespace to search in.
+    let namespace = match namespace {
+        Some(ns) => globals.resolve_namespace(ns),
+        None => globals.items.clone(),
+    };
+
     for scope in scopes {
         if namespace.is_empty() {
             if let Some(res) = resolve_scope_locals(kind, globals, scope, vars, name_str) {
@@ -1006,14 +1125,15 @@ fn resolve<'a>(
                 return Ok(res);
             }
         }
-
-        if let Some(namespaces) = scope.opens.get(namespace) {
-            candidates = resolve_explicit_opens(kind, globals, namespaces, name_str);
-            if !candidates.is_empty() {
-                // Explicit opens shadow prelude and unopened globals.
-                break;
-            }
-        }
+        // TODO handle opens
+        //
+        // if let Some(namespaces) = scope.opens.get(namespace) {
+        //     candidates = resolve_explicit_opens(kind, globals, namespaces, name_str);
+        //     if !candidates.is_empty() {
+        //         // Explicit opens shadow prelude and unopened globals.
+        //         break;
+        //     }
+        // }
 
         if scope.kind == ScopeKind::Callable {
             // Since local callables are not closures, hide local variables in parent scopes.
@@ -1114,15 +1234,16 @@ fn resolve_scope_locals(
                     return Some(Res::Param(id));
                 }
             }
+            NameKind::Namespace => (/* no local namespaces in vars TODO verify this */ )
         }
     }
 
-    if let Some(&id) = scope.item(kind, name) {
+    if let Some(id) = scope.item(kind, name) {
         return Some(Res::Item(id, ItemStatus::Available));
     }
 
     if let ScopeKind::Namespace(namespace) = &scope.kind {
-        if let Some(&res) = globals.get(kind, namespace, name) {
+        if let Some(res) = globals.get(kind, namespace, name) {
             return Some(res);
         }
     }
@@ -1157,7 +1278,7 @@ fn get_scope_locals(scope: &Scope, offset: u32, vars: bool) -> Vec<Local> {
 
     // items
     // skip adding newtypes since they're already in the terms map
-    names.extend(scope.terms.iter().map(|term| Local {
+    names.extend(scope.terms().iter().map(|term| Local {
         name: term.0.clone(),
         kind: LocalKind::Item(*term.1),
     }));
@@ -1176,7 +1297,7 @@ fn resolve_implicit_opens<'a, 'b>(
 ) -> FxHashMap<Res, &'a str> {
     let mut candidates = FxHashMap::default();
     for namespace in namespaces {
-        if let Some(&res) = globals.get(kind, namespace, name) {
+        if let Some(res) = globals.get(kind, namespace, name) {
             candidates.insert(res, *namespace);
         }
     }
@@ -1191,7 +1312,7 @@ fn resolve_explicit_opens<'a>(
 ) -> FxHashMap<Res, &'a Open> {
     let mut candidates = FxHashMap::default();
     for open in opens {
-        if let Some(&res) = globals.get(kind, &open.namespace, name) {
+        if let Some(res) = globals.get(kind, &open.namespace, name) {
             candidates.insert(res, open);
         }
     }
