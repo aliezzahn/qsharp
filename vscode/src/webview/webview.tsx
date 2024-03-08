@@ -46,7 +46,9 @@ type EstimatesState = {
 type CircuitState = {
   viewType: "circuit";
   title: string;
-  circuit: object;
+  subtitle: string;
+  circuit?: object;
+  error?: object;
 };
 
 type State =
@@ -115,18 +117,9 @@ function onMessage(event: any) {
       break;
     case "circuit":
       {
-        if (
-          !message.circuit ||
-          typeof message.circuit !== "object" ||
-          typeof message.title !== "string"
-        ) {
-          console.error("No circuit in message: ", message);
-          return;
-        }
         state = {
           viewType: "circuit",
-          title: message.title,
-          circuit: message.circuit,
+          ...message,
         };
       }
       break;
@@ -188,7 +181,9 @@ function App({ state }: { state: State }) {
       return (
         <CircuitPanel
           title={state.title}
+          subtitle={state.subtitle}
           circuit={state.circuit}
+          error={state.error}
         ></CircuitPanel>
       );
     case "help":

@@ -22,7 +22,7 @@ import { loadProject } from "./projectSystem";
 import { EventType, sendTelemetryEvent } from "./telemetry";
 import { getRandomGuid } from "./utils";
 import type { IOperationInfo } from "../../npm/lib/web/qsc_wasm";
-import { getTarget } from "./config";
+import { showCircuitCommand } from "./circuit";
 
 const QSharpWebViewType = "qsharp-webview";
 const compilerRunTimeoutMs = 1000 * 60 * 5; // 5 minutes
@@ -304,7 +304,7 @@ export function registerWebViewCommands(context: ExtensionContext) {
       // Start the worker, run the code, and send the results to the webview
       const worker = getCompilerWorker(compilerWorkerScriptPath);
       const compilerTimeout = setTimeout(() => {
-        worker.terminate(); // Confirm: Does the 'terminate' in the finally below error if this happens?
+        worker.terminate();
       }, compilerRunTimeoutMs);
       try {
         const validateShotsInput = (input: string) => {
@@ -375,50 +375,7 @@ export function registerWebViewCommands(context: ExtensionContext) {
     commands.registerCommand(
       "qsharp-vscode.showCircuit",
       async (operation?: IOperationInfo) => {
-        const editor = window.activeTextEditor;
-        if (!editor || !isQsharpDocument(editor.document)) {
-          throw new Error("The currently active window is not a Q# file");
-        }
-
-        sendMessageToPanel("circuit", true, undefined);
-
-        // Start the worker, run the code, and send the results to the webview
-        const worker = getCompilerWorker(compilerWorkerScriptPath);
-        const compilerTimeout = setTimeout(() => {
-          log.info("terminating circuit worker due to timeout");
-          worker.terminate(); // Confirm: Does the 'terminate' in the finally below error if this happens?
-        }, compilerRunTimeoutMs);
-        try {
-          let title;
-          const targetProfile = getTarget();
-          const sources = await loadProject(editor.document.uri);
-          if (operation) {
-            title = `${operation.name} with ${operation.totalNumQubits} input qubits`;
-          } else {
-            title = editor.document.uri.path.split("/").pop() || "Circuit";
-          }
-
-          const circuit = await worker.getCircuit(
-            sources,
-            targetProfile,
-            operation,
-          );
-
-          clearTimeout(compilerTimeout);
-
-          const message = {
-            command: "circuit",
-            circuit,
-            title,
-          };
-          sendMessageToPanel("circuit", false, message);
-        } catch (e: any) {
-          log.error("Circuit error. ", e.toString());
-          throw new Error("Run failed");
-        } finally {
-          log.info("terminating circuit worker");
-          worker.terminate();
-        }
+        await showCircuitCommand(context.extensionUri, operation);
       },
     ),
   );

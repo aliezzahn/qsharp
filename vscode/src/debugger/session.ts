@@ -45,7 +45,7 @@ import {
   sendTelemetryEvent,
 } from "../telemetry";
 import { getRandomGuid } from "../utils";
-import { getTarget } from "../config";
+import { getTarget, getTargetFriendlyName } from "../config";
 import { sendMessageToPanel } from "../webviewPanel";
 
 const ErrorProgramHasErrors =
@@ -75,6 +75,7 @@ export class QscDebugSession extends LoggingDebugSession {
   private failureMessage: string;
   private eventTarget: QscEventTarget;
   private supportsVariableType = false;
+  private targetProfile = getTarget();
 
   public constructor(
     private fileAccessor: FileAccessor,
@@ -100,10 +101,9 @@ export class QscDebugSession extends LoggingDebugSession {
   public async init(associationId: string): Promise<void> {
     const start = performance.now();
     sendTelemetryEvent(EventType.InitializeRuntimeStart, { associationId }, {});
-    const targetProfile = getTarget();
     const failureMessage = await this.debugService.loadSource(
       this.sources,
-      targetProfile,
+      this.targetProfile,
       this.config.entry,
       this.languageFeatures,
     );
@@ -315,21 +315,13 @@ export class QscDebugSession extends LoggingDebugSession {
       return;
     }
 
+    await this.showCircuit();
+
     if (result.id == StepResultId.Return) {
       log.info("ending session - return");
       await this.endSession(`ending session`, 0);
       return;
     }
-
-    const circuit = await this.debugService.getCircuit();
-    log.info("stopped with circuit: " + JSON.stringify(circuit));
-    const message = {
-      command: "circuit",
-      circuit,
-      title: "Q# circuit",
-    };
-    sendMessageToPanel("circuit", false, message);
-    log.info("updated panel");
 
     if (result.id == StepResultId.BreakpointHit) {
       const evt = new StoppedEvent(
@@ -903,5 +895,18 @@ export class QscDebugSession extends LoggingDebugSession {
       "console",
     );
     this.sendEvent(evt);
+  }
+
+  private async showCircuit() {
+    const circuit = await this.debugService.getCircuit();
+    log.info("stopped with circuit: " + JSON.stringify(circuit));
+    const message = {
+      command: "circuit",
+      circuit,
+      title: this.sources[0][0].split("/").pop(),
+      subtitle: `${getTargetFriendlyName(this.targetProfile)}`,
+    };
+    sendMessageToPanel("circuit", false, message);
+    log.info("updated panel");
   }
 }

@@ -72,7 +72,7 @@ impl Backend for Builder {
     fn mresetz(&mut self, q: usize) -> Self::ResultType {
         if self.config.no_qubit_reuse {
             // defer the measurement
-            self.remapper.m(q)
+            self.remapper.mreset(q)
         } else {
             let mapped_q = self.map(q);
             // In the Circuit schema, result id is per-qubit
