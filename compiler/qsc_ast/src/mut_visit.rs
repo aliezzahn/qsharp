@@ -333,7 +333,15 @@ pub fn walk_qubit_init(vis: &mut impl MutVisitor, init: &mut QubitInit) {
 
 pub fn walk_path(vis: &mut impl MutVisitor, path: &mut Path) {
     vis.visit_span(&mut path.span);
-    path.namespace.iter_mut().for_each(|n| vis.visit_ident(n));
+    // i'm not sure about this --
+    // we may have to actually visit the namespace and drill into it before assigning
+    // but i think there's a small chance that we actually just need to assign node ids
+    // to individual idents
+    // not sure
+    // note that the first iter mut is here because its an option, not an iterator
+    path.namespace
+        .iter_mut()
+        .for_each(|n| n.iter_mut().for_each(|x| vis.visit_ident(x)));
     vis.visit_ident(&mut path.name);
 }
 

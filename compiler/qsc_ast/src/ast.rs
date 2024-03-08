@@ -1270,7 +1270,7 @@ pub struct Path {
     /// The span.
     pub span: Span,
     /// The namespace.
-    pub namespace: Option<Box<Ident>>,
+    pub namespace: Option<Vec<Ident>>,
     /// The declaration name.
     pub name: Box<Ident>,
 }
@@ -1278,7 +1278,17 @@ pub struct Path {
 impl Display for Path {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if let Some(ns) = &self.namespace {
-            write!(f, "Path {} {} ({}) ({})", self.id, self.span, ns, self.name)?;
+            write!(
+                f,
+                "Path {} {} ({}) ({})",
+                self.id,
+                self.span,
+                ns.iter()
+                    .map(|x| format!("{x}"))
+                    .collect::<Vec<_>>()
+                    .join("."),
+                self.name
+            )?;
         } else {
             write!(f, "Path {} {} ({})", self.id, self.span, self.name)?;
         }

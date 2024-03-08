@@ -300,6 +300,8 @@ pub fn walk_qubit_init<'a>(vis: &mut impl Visitor<'a>, init: &'a QubitInit) {
 }
 
 pub fn walk_path<'a>(vis: &mut impl Visitor<'a>, path: &'a Path) {
-    path.namespace.iter().for_each(|n| vis.visit_ident(n));
+    path.namespace
+        .iter()
+        .for_each(|n| n.iter().for_each(|x| vis.visit_ident(x)));
     vis.visit_ident(&path.name);
 }
