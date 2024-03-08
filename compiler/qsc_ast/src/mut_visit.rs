@@ -89,7 +89,7 @@ pub fn walk_package(vis: &mut impl MutVisitor, package: &mut Package) {
 
 pub fn walk_namespace(vis: &mut impl MutVisitor, namespace: &mut Namespace) {
     vis.visit_span(&mut namespace.span);
-    vis.visit_ident(&mut namespace.name);
+    vis.visit_path(&mut namespace.name);
     namespace.items.iter_mut().for_each(|i| vis.visit_item(i));
 }
 
@@ -104,7 +104,7 @@ pub fn walk_item(vis: &mut impl MutVisitor, item: &mut Item) {
         ItemKind::Callable(decl) => vis.visit_callable_decl(decl),
         ItemKind::Err => {}
         ItemKind::Open(ns, alias) => {
-            vis.visit_ident(ns);
+            vis.visit_path(ns);
             alias.iter_mut().for_each(|a| vis.visit_ident(a));
         }
         ItemKind::Ty(ident, def) => {

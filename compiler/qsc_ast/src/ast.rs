@@ -164,7 +164,7 @@ pub struct Namespace {
     /// The documentation.
     pub doc: Rc<str>,
     /// The namespace name.
-    pub name: Box<Ident>,
+    pub name: Box<Path>,
     /// The items in the namespace.
     pub items: Box<[Box<Item>]>,
 }
@@ -259,7 +259,7 @@ pub enum ItemKind {
     #[default]
     Err,
     /// An `open` item for a namespace with an optional alias.
-    Open(Box<Ident>, Option<Box<Ident>>),
+    Open(Box<Path>, Option<Box<Ident>>),
     /// A `newtype` declaration.
     Ty(Box<Ident>, Box<TyDef>),
 }
