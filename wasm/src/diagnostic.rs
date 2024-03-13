@@ -56,7 +56,7 @@ impl VSDiagnostic {
             interpret::Error::Eval(e) => error_labels(e.error()),
             interpret::Error::NoEntryPoint
             | interpret::Error::UnsupportedRuntimeCapabilities
-            | interpret::Error::NoCircuitForInternal => Vec::new(),
+            | interpret::Error::NoCircuitForOperation => Vec::new(),
         };
 
         Self::new(labels, source_name, err)
@@ -198,7 +198,7 @@ pub fn interpret_errors_into_vs_diagnostics(errs: &[interpret::Error]) -> Vec<VS
                 interpret::Error::Eval(e) => error_labels(e.error()),
                 interpret::Error::NoEntryPoint
                 | interpret::Error::UnsupportedRuntimeCapabilities
-                | interpret::Error::NoCircuitForInternal => Vec::new(),
+                | interpret::Error::NoCircuitForOperation => Vec::new(),
             };
 
             let doc = labels

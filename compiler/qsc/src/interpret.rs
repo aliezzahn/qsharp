@@ -22,8 +22,8 @@ use miette::Diagnostic;
 use num_bigint::BigUint;
 use num_complex::Complex;
 use qsc_circuit::{
-    operations::{operation_circuit_entry_expr, OperationInfo},
-    Builder as CircuitBuilder, Circuit, Config as CircuitConfig,
+    operations::entry_expr_for_qubit_operation, Builder as CircuitBuilder, Circuit,
+    Config as CircuitConfig,
 };
 use qsc_codegen::qir_base::BaseProfSim;
 use qsc_data_structures::{
@@ -84,10 +84,12 @@ pub enum Error {
     #[error("unsupported runtime capabilities for code generation")]
     #[diagnostic(code("Qsc.Interpret.UnsupportedRuntimeCapabilities"))]
     UnsupportedRuntimeCapabilities,
-    #[error("cannot generate circuit for an internal item")]
-    #[diagnostic(code("Qsc.Interpret.NoCircuitForInternal"))]
-    #[diagnostic(help("remove the internal keyword to generate a circuit for this callable"))]
-    NoCircuitForInternal,
+    #[error("expression does not evaluate to an operation that takes qubits")]
+    #[diagnostic(code("Qsc.Interpret.NoCircuitForOperation"))]
+    #[diagnostic(help(
+        "provide the name of a callable or a lambda expression that only takes qubits"
+    ))]
+    NoCircuitForOperation,
 }
 
 /// A Q# interpreter.
@@ -162,7 +164,14 @@ impl Interpreter {
             sim: BackendChain::new(
                 SparseSim::new(),
                 CircuitBuilder::new(CircuitConfig {
-                    no_qubit_reuse: capabilities.is_empty(),
+                    // When using in conjunction with the simulator,
+                    // the circuit builder should *not* perform base profile
+                    // decompositions, in order to match the simulator's behavior.
+                    //
+                    // Note that conditional compilation (e.g. @Config(Base) attributes)
+                    // will still respect the selected profile. This also
+                    // matches the behavior of the simulator.
+                    base_profile: false,
                 }),
             ),
             quantum_seed: None,
@@ -290,6 +299,7 @@ impl Interpreter {
         self.sim.capture_quantum_state()
     }
 
+    /// Get the current circuit representation of the program.
     pub fn get_circuit(&self) -> Circuit {
         self.sim.chained.snapshot()
     }
@@ -310,27 +320,67 @@ impl Interpreter {
         Ok(sim.finish(&val))
     }
 
-    pub fn circuit(&mut self, args: CircuitArgs) -> std::result::Result<Circuit, Vec<Error>> {
-        let expr = match args {
-            CircuitArgs::Operation(args) => {
-                if args.internal {
-                    return Err(vec![Error::NoCircuitForInternal]);
-                }
-                Some(operation_circuit_entry_expr(&args))
-            }
-            CircuitArgs::EntryExpr(expr) => Some(expr),
-            CircuitArgs::EntryPoint => None,
-        };
-
-        let no_qubit_reuse = self.capabilities.is_empty();
-
+    /// Generates a circuit representation for the program.
+    ///
+    /// `entry` can be the current entrypoint, an entry expression, or any operation
+    /// that takes qubits.
+    ///
+    /// An operation can be specified by its name or a lambda expression that only takes qubits.
+    /// e.g. `Sample.Main` , `qs => H(qs[0])`
+    pub fn circuit(
+        &mut self,
+        entry: CircuitEntryPoint,
+    ) -> std::result::Result<Circuit, Vec<Error>> {
         let mut sink = std::io::sink();
         let mut out = GenericReceiver::new(&mut sink);
+        let mut sim = CircuitBuilder::new(CircuitConfig {
+            base_profile: self.capabilities.is_empty(),
+        });
 
-        let mut sim = CircuitBuilder::new(CircuitConfig { no_qubit_reuse });
+        let entry_expr = match entry {
+            CircuitEntryPoint::Operation(operation_expr) => {
+                // To determine whether the passed in expression is a valid callable name
+                // or lambda, we evaluate it and inspect the runtime value.
+                let maybe_operation = self.eval_fragments(&mut out, &operation_expr)?;
 
-        let val = if let Some(expr) = expr {
-            self.run_with_sim(&mut sim, &mut out, &expr)?
+                let maybe_invoke_expr = match maybe_operation {
+                    Value::Closure(_, item_id, functor_app)
+                    | Value::Global(item_id, functor_app) => {
+                        // Controlled operations are not supported at the moment.
+                        if functor_app.controlled > 0 {
+                            return Err(vec![Error::NoCircuitForOperation]);
+                        }
+
+                        // Find the item in the HIR
+                        let package = map_fir_package_to_hir(item_id.package);
+                        let local_item_id =
+                            crate::hir::LocalItemId::from(usize::from(item_id.item));
+                        let package_store = self.compiler.package_store();
+
+                        let item = package_store
+                            .get(package)
+                            .and_then(|unit| unit.package.items.get(local_item_id));
+
+                        // Generate the entry expression to invoke the operation.
+                        // Will return `None` if item is not a valid callable that takes qubits.
+                        item.and_then(|item| entry_expr_for_qubit_operation(item, &operation_expr))
+                    }
+                    _ => {
+                        return Err(vec![Error::NoCircuitForOperation]);
+                    }
+                };
+
+                if maybe_invoke_expr.is_none() {
+                    return Err(vec![Error::NoCircuitForOperation]);
+                }
+                maybe_invoke_expr
+            }
+            CircuitEntryPoint::EntryExpr(expr) => Some(expr),
+            CircuitEntryPoint::EntryPoint => None,
+        };
+
+        let val = if let Some(entry_expr) = entry_expr {
+            self.run_with_sim(&mut sim, &mut out, &entry_expr)?
         } else {
             self.eval_entry_with_sim(&mut sim, &mut out)
         }?;
@@ -346,7 +396,8 @@ impl Interpreter {
         receiver: &mut impl Receiver,
         expr: &str,
     ) -> std::result::Result<InterpretResult, Vec<Error>> {
-        let stmt_id = self.compile_expr_to_stmt(expr)?;
+        let expr_id = self.compile_entry_expr(expr)?;
+
         if self.quantum_seed.is_some() {
             sim.set_seed(self.quantum_seed);
         }
@@ -354,7 +405,7 @@ impl Interpreter {
         Ok(eval(
             self.package,
             self.classical_seed,
-            stmt_id.into(),
+            expr_id.into(),
             self.compiler.package_store(),
             &self.fir_store,
             &mut Env::default(),
@@ -363,10 +414,21 @@ impl Interpreter {
         ))
     }
 
-    fn compile_expr_to_stmt(&mut self, expr: &str) -> std::result::Result<StmtId, Vec<Error>> {
-        let increment = self.compiler.compile_expr(expr).map_err(into_errors)?;
+    fn compile_entry_expr(&mut self, expr: &str) -> std::result::Result<ExprId, Vec<Error>> {
+        let increment = self
+            .compiler
+            .compile_entry_expr(expr)
+            .map_err(into_errors)?;
 
-        let stmts = self.lower(&increment);
+        // `lower` will update the entry expression in the FIR store,
+        // and it will always return an empty list of statements.
+        let _ = self.lower(&increment);
+
+        // The AST and HIR packages in `increment` only contain an entry
+        // expression and no statements. The HIR *can* contain items if the entry
+        // expression defined any items.
+        assert!(increment.hir.stmts.is_empty());
+        assert!(increment.ast.package.nodes.is_empty());
 
         // Updating the compiler state with the new AST/HIR nodes
         // is not necessary for the interpreter to function, as all
@@ -376,10 +438,10 @@ impl Interpreter {
         // here to keep the package stores consistent.
         self.compiler.update(increment);
 
-        assert!(stmts.len() == 1, "expected exactly one statement");
-        let stmt_id = stmts.first().expect("expected exactly one statement");
+        let unit = self.fir_store.get(self.package);
+        let entry = unit.entry.expect("package should have an entry expression");
 
-        Ok(*stmt_id)
+        Ok(entry)
     }
 
     fn lower(&mut self, unit_addition: &qsc_frontend::incremental::Increment) -> Vec<StmtId> {
@@ -395,9 +457,15 @@ impl Interpreter {
     }
 }
 
-pub enum CircuitArgs {
-    Operation(OperationInfo),
+/// Describes the entry point for circuit generation.
+pub enum CircuitEntryPoint {
+    /// An operation. This must be an callable name or a lambda
+    /// expression that only takes qubits as arguments.
+    /// The callable name must be visible in the current package.
+    Operation(String),
+    /// An explicitly provided entry expression.
     EntryExpr(String),
+    /// The entry point for the current package.
     EntryPoint,
 }
 

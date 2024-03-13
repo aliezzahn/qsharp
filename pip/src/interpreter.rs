@@ -22,7 +22,7 @@ use qsc::{
     interpret::{
         self,
         output::{Error, Receiver},
-        CircuitArgs, Value,
+        CircuitEntryPoint, Value,
     },
     project::{FileSystem, Manifest, ManifestDescriptor},
     target::Profile,
@@ -216,7 +216,7 @@ impl Interpreter {
     fn circuit(&mut self, py: Python, entry_expr: &str) -> PyResult<PyObject> {
         match self
             .interpreter
-            .circuit(CircuitArgs::EntryExpr(entry_expr.into()))
+            .circuit(CircuitEntryPoint::EntryExpr(entry_expr.into()))
         {
             Ok(circuit) => Ok(PyCircuit(circuit).into_py(py)),
             Err(errors) => Err(QSharpError::new_err(format_errors(errors))),

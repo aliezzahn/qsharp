@@ -39,7 +39,7 @@ export async function showCircuitCommand(
   const targetProfile = getTarget();
   const sources = await loadProject(editor.document.uri);
   if (operation) {
-    title = `${operation.name} with ${operation.totalNumQubits} input qubits`;
+    title = `${operation.operation} with ${operation.totalNumQubits} input qubits`;
     subtitle = `${getTargetFriendlyName(targetProfile)} `;
   } else {
     title = editor.document.uri.path.split("/").pop() || "Circuit";

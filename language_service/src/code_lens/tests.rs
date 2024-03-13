@@ -152,12 +152,7 @@ fn qubit_operation_circuit() {
                         Circuit(
                             Some(
                                 OperationInfo {
-                                    namespace: "Test",
-                                    name: "Foo",
-                                    internal: false,
-                                    qubit_param_dimensions: [
-                                        0,
-                                    ],
+                                    operation: "Test.Foo",
                                     total_num_qubits: 1,
                                 },
                             ),
@@ -185,14 +180,7 @@ fn qubit_arrays_operation_circuit() {
                         Circuit(
                             Some(
                                 OperationInfo {
-                                    namespace: "Test",
-                                    name: "Foo",
-                                    internal: false,
-                                    qubit_param_dimensions: [
-                                        0,
-                                        1,
-                                        2,
-                                    ],
+                                    operation: "Test.Foo",
                                     total_num_qubits: 7,
                                 },
                             ),

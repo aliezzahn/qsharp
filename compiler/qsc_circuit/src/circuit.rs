@@ -55,10 +55,8 @@ pub struct Qubit {
 
 #[derive(Clone, Debug, Copy, Default)]
 pub struct Config {
-    // TODO: I don't think it ever makes sense to
-    // disallow qubit reuse when using in conjuction with the
-    // real simulator
-    pub no_qubit_reuse: bool,
+    /// Perform Base Profile decompositions
+    pub base_profile: bool,
 }
 
 type ObjectsByColumn = FxHashMap<usize, String>;

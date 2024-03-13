@@ -15,7 +15,7 @@ use qsc::{
     interpret::{
         self,
         output::{self, Receiver},
-        CircuitArgs,
+        CircuitEntryPoint,
     },
     target::Profile,
     LanguageFeatures, PackageStore, PackageType, SourceContents, SourceMap, SourceName, SparseSim,
@@ -158,15 +158,9 @@ pub fn get_circuit(
         .circuit(match operation {
             Some(p) => {
                 let o: language_service::OperationInfo = p.into();
-                CircuitArgs::Operation(qsc::circuit::OperationInfo {
-                    namespace: o.namespace,
-                    name: o.name,
-                    internal: o.internal,
-                    qubit_param_dimensions: o.qubit_param_dimensions,
-                    total_num_qubits: o.total_num_qubits,
-                })
+                CircuitEntryPoint::Operation(o.operation)
             }
-            None => CircuitArgs::EntryPoint,
+            None => CircuitEntryPoint::EntryPoint,
         })
         .map_err(interpret_errors_into_vs_diagnostics_json)?;
 

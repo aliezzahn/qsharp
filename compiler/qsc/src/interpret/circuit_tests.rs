@@ -3,11 +3,10 @@
 
 #![allow(clippy::unicode_not_nfc)]
 
-use super::{CircuitArgs, Debugger, Interpreter};
+use super::{CircuitEntryPoint, Debugger, Interpreter};
 use crate::target::Profile;
 use expect_test::expect;
 use miette::Diagnostic;
-use qsc_circuit::operations::OperationInfo;
 use qsc_data_structures::language_features::LanguageFeatures;
 use qsc_eval::output::GenericReceiver;
 use qsc_frontend::compile::SourceMap;
@@ -40,7 +39,7 @@ fn empty() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     expect![].assert_eq(&circ.to_string());
@@ -62,7 +61,7 @@ fn one_gate() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -89,7 +88,7 @@ fn m_base_profile() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -118,7 +117,7 @@ fn m_unrestricted_profile() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -146,7 +145,7 @@ fn mresetz_unrestricted_profile() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -174,7 +173,7 @@ fn mresetz_base_profile() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -212,7 +211,7 @@ fn unrestricted_profile_result_comparison() {
     interpreter.set_quantum_seed(Some(2));
 
     let circuit_err = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect_err("circuit should return error")
         .pop()
         .expect("error should exist");
@@ -275,7 +274,7 @@ fn custom_intrinsic() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::EntryPoint)
+        .circuit(CircuitEntryPoint::EntryPoint)
         .expect("circuit generation should succeed");
 
     // This is one gate that spans ten target wires, even though the
@@ -315,13 +314,7 @@ fn operation_with_qubits() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::Operation(OperationInfo {
-            namespace: "Test".into(),
-            name: "Test".into(),
-            internal: false,
-            qubit_param_dimensions: vec![0, 0],
-            total_num_qubits: 2,
-        }))
+        .circuit(CircuitEntryPoint::Operation("Test.Test".into()))
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -351,13 +344,7 @@ fn operation_with_qubits_base_profile() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::Operation(OperationInfo {
-            namespace: "Test".into(),
-            name: "Test".into(),
-            internal: false,
-            qubit_param_dimensions: vec![0, 0],
-            total_num_qubits: 2,
-        }))
+        .circuit(CircuitEntryPoint::Operation("Test.Test".into()))
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -404,13 +391,7 @@ fn operation_with_qubit_arrays() {
     );
 
     let circ = interpreter
-        .circuit(CircuitArgs::Operation(OperationInfo {
-            namespace: "Test".into(),
-            name: "Test".into(),
-            internal: false,
-            qubit_param_dimensions: vec![1, 2, 3, 0],
-            total_num_qubits: 15,
-        }))
+        .circuit(CircuitEntryPoint::Operation("Test.Test".into()))
         .expect("circuit generation should succeed");
 
     expect![[r"
@@ -436,7 +417,135 @@ fn operation_with_qubit_arrays() {
 }
 
 #[test]
-fn internal_operation_with_qubits() {
+fn adjoint_operation() {
+    let mut interpreter = interpreter(
+        r"
+        namespace Test {
+            @EntryPoint()
+            operation Main() : Result[] { [] }
+
+            operation SWAP (q1 : Qubit, q2 : Qubit) : Unit
+                is Adj + Ctl {
+
+                body (...) {
+                    CNOT(q1, q2);
+                    CNOT(q2, q1);
+                    CNOT(q1, q2);
+                }
+
+                adjoint (...) {
+                    SWAP(q1, q2);
+                }
+
+                controlled (cs, ...) {
+                    CNOT(q1, q2);
+                    Controlled CNOT(cs, (q2, q1));
+                    CNOT(q1, q2);
+                }
+            }
+        }",
+        Profile::Unrestricted,
+    );
+
+    let circ = interpreter
+        .circuit(CircuitEntryPoint::Operation("Adjoint Test.SWAP".into()))
+        .expect("circuit generation should succeed");
+
+    expect![[r"
+        q_0    ── ● ──── X ──── ● ──
+        q_1    ── X ──── ● ──── X ──
+    "]]
+    .assert_eq(&circ.to_string());
+}
+
+#[test]
+fn lambda() {
+    let mut interpreter = interpreter(
+        r"
+        namespace Test {
+            @EntryPoint()
+            operation Main() : Result[] { [] }
+
+            operation SWAP (q1 : Qubit, q2 : Qubit) : Unit
+                is Adj + Ctl {
+
+                body (...) {
+                    CNOT(q1, q2);
+                    CNOT(q2, q1);
+                    CNOT(q1, q2);
+                }
+
+                adjoint (...) {
+                    SWAP(q1, q2);
+                }
+
+                controlled (cs, ...) {
+                    CNOT(q1, q2);
+                    Controlled CNOT(cs, (q2, q1));
+                    CNOT(q1, q2);
+                }
+            }
+        }",
+        Profile::Unrestricted,
+    );
+
+    let circ = interpreter
+        .circuit(CircuitEntryPoint::Operation("q => H(q)".into()))
+        .expect("circuit generation should succeed");
+
+    expect![[r"
+        q_0    ── H ──
+    "]]
+    .assert_eq(&circ.to_string());
+}
+
+#[test]
+fn controlled_operation() {
+    let mut interpreter = interpreter(
+        r"
+        namespace Test {
+            @EntryPoint()
+            operation Main() : Result[] { [] }
+
+            operation SWAP (q1 : Qubit, q2 : Qubit) : Unit
+                is Adj + Ctl {
+
+                body (...) {
+                    CNOT(q1, q2);
+                    CNOT(q2, q1);
+                    CNOT(q1, q2);
+                }
+
+                adjoint (...) {
+                    SWAP(q1, q2);
+                }
+
+                controlled (cs, ...) {
+                    CNOT(q1, q2);
+                    Controlled CNOT(cs, (q2, q1));
+                    CNOT(q1, q2);
+                }
+            }
+        }",
+        Profile::Unrestricted,
+    );
+
+    let circ_err = interpreter
+        .circuit(CircuitEntryPoint::Operation("Controlled Test.SWAP".into()))
+        .expect_err("circuit generation should fail");
+
+    // Controlled operations are not supported at the moment.
+    // We don't generate an accurate call signature with the tuple arguments.
+    expect![[r"
+        [
+            NoCircuitForOperation,
+        ]
+    "]]
+    .assert_debug_eq(&circ_err);
+}
+
+#[test]
+fn internal_operation() {
     let mut interpreter = interpreter(
         r"
         namespace Test {
@@ -453,18 +562,61 @@ fn internal_operation_with_qubits() {
     );
 
     let circ_err = interpreter
-        .circuit(CircuitArgs::Operation(OperationInfo {
-            namespace: "Test".into(),
-            name: "Test".into(),
-            internal: true,
-            qubit_param_dimensions: vec![0, 0],
-            total_num_qubits: 2,
-        }))
+        .circuit(CircuitEntryPoint::Operation("Test.Test".into()))
+        .expect_err("circuit generation should fail");
+
+    expect![[r#"
+        [
+            Compile(
+                WithSource {
+                    sources: [
+                        Source {
+                            name: "line_0",
+                            contents: "Test.Test",
+                            offset: 0,
+                        },
+                    ],
+                    error: Frontend(
+                        Error(
+                            Resolve(
+                                NotFound(
+                                    "Test",
+                                    Span {
+                                        lo: 5,
+                                        hi: 9,
+                                    },
+                                ),
+                            ),
+                        ),
+                    ),
+                },
+            ),
+        ]
+    "#]]
+    .assert_debug_eq(&circ_err);
+}
+
+#[test]
+fn operation_with_non_qubit_args() {
+    let mut interpreter = interpreter(
+        r"
+        namespace Test {
+            @EntryPoint()
+            operation Main() : Result[] { [] }
+
+            operation Test(q1: Qubit, q2: Qubit, i: Int) : Unit {
+            }
+        }",
+        Profile::Unrestricted,
+    );
+
+    let circ_err = interpreter
+        .circuit(CircuitEntryPoint::Operation("Test.Test".into()))
         .expect_err("circuit generation should fail");
 
     expect![[r"
         [
-            NoCircuitForInternal,
+            NoCircuitForOperation,
         ]
     "]]
     .assert_debug_eq(&circ_err);
@@ -535,24 +687,32 @@ mod debugger_stepping {
             Profile::Base,
         );
 
-        expect![[r"
+        // Surprising but expected: Reset gates would *not* normally
+        // be generated in Base Profile, but they are here, since
+        // when running in tandem with the simulator, the resulting
+        // circuit is intended to match the calls into the simulator.
+        //
+        // Note the circuit still looks different than what would be
+        // generated in Unrestricted Profile for the same code,
+        // due to conditional compilation in the standard library.
+        expect![["
             step:
             step:
             q_0
             step:
             q_0    ── H ──
             step:
-            q_0    ── H ──── Z ────────────────
-            q_1    ── H ──── ● ──── H ──── M ──
-                                           ╘═══
+            q_0    ── H ──── Z ───────────────────────
+            q_1    ── H ──── ● ──── H ──── M ─── |0〉 ─
+                                           ╘══════════
             step:
-            q_0    ── H ──── Z ────────────────
-            q_1    ── H ──── ● ──── H ──── M ──
-                                           ╘═══
+            q_0    ── H ──── Z ─── |0〉 ───────────────
+            q_1    ── H ──── ● ──── H ──── M ─── |0〉 ─
+                                           ╘══════════
             step:
-            q_0    ── H ──── Z ────────────────
-            q_1    ── H ──── ● ──── H ──── M ──
-                                           ╘═══
+            q_0    ── H ──── Z ─── |0〉 ───────────────
+            q_1    ── H ──── ● ──── H ──── M ─── |0〉 ─
+                                           ╘══════════
         "]]
         .assert_eq(&circs);
     }

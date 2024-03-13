@@ -284,10 +284,7 @@ impl LanguageService {
                     qsls::protocol::CodeLensCommand::Circuit(args) => (
                         "circuit",
                         args.map(|args| OperationInfo {
-                            namespace: args.namespace,
-                            name: args.name,
-                            internal: args.internal,
-                            qubit_param_dimensions: args.qubit_param_dimensions,
+                            operation: args.operation,
                             total_num_qubits: args.total_num_qubits,
                         }),
                     ),
@@ -434,19 +431,12 @@ serializable_type! {
 serializable_type! {
     OperationInfo,
     {
-        pub namespace: String,
-        pub name: String,
-        pub internal: bool,
-        #[serde(rename = "qubitParamDimensions")]
-        pub qubit_param_dimensions: Vec<u32>,
+        pub operation: String,
         #[serde(rename = "totalNumQubits")]
         pub total_num_qubits: u32,
     },
     r#"export interface IOperationInfo {
-        namespace: string;
-        name: string;
-        internal: boolean;
-        qubitParamDimensions: number[];
+        operation: string;
         totalNumQubits: number;
     }"#,
     IOperationInfo

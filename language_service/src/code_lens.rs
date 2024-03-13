@@ -6,11 +6,11 @@ mod tests;
 
 use crate::{
     compilation::{Compilation, CompilationKind},
-    protocol::{CodeLens, CodeLensCommand},
+    protocol::{CodeLens, CodeLensCommand, OperationInfo},
     qsc_utils::{into_range, span_contains},
 };
 use qsc::{
-    circuit::operation_circuit_info,
+    circuit::qubit_param_info,
     hir::{Attr, ItemKind, Visibility},
     line_column::Encoding,
 };
@@ -28,37 +28,40 @@ pub(crate) fn get_code_lenses(
     let user_unit = compilation.user_unit();
     let source_span = compilation.package_span_of_source(source_name);
 
-    // Get callables in the current source file with the @EntryPoint() attribute.
-    // If there is more than one entrypoint, not our problem, we'll go ahead
-    // and return code lenses for all. The duplicate entrypoint diagnostic
-    // will be reported from elsewhere.
-    let decls = user_unit.package.items.values().filter_map(|item| {
+    // Get callables in the current source file.
+    let callables = user_unit.package.items.values().filter_map(|item| {
         if span_contains(source_span, item.span.lo) {
+            // We don't support any commands for internal operations.
+            if matches!(item.visibility, Visibility::Internal) {
+                return None;
+            }
+
             if let ItemKind::Callable(decl) = &item.kind {
                 if let Some(ItemKind::Namespace(ns, _)) = item
                     .parent
                     .and_then(|parent_id| user_unit.package.items.get(parent_id))
                     .map(|parent| &parent.kind)
                 {
+                    let namespace = ns.name.to_string();
+                    let range = into_range(position_encoding, decl.span, &user_unit.sources);
+                    let name = decl.name.name.clone();
+
                     if item.attrs.iter().any(|a| a == &Attr::EntryPoint) {
-                        return Some((decl, ns.name.to_string(), true, false));
+                        // If there is more than one entrypoint, not our problem, we'll go ahead
+                        // and return code lenses for all. The duplicate entrypoint diagnostic
+                        // will be reported from elsewhere.
+                        return Some((item, range, namespace, name, true));
                     }
-                    return Some((
-                        decl,
-                        ns.name.to_string(),
-                        false,
-                        matches!(item.visibility, Visibility::Internal),
-                    ));
+
+                    return Some((item, range, namespace, name, false));
                 }
             }
         }
         None
     });
 
-    decls
-        .flat_map(|(decl, namespace, is_entry_point, internal)| {
-            let range = into_range(position_encoding, decl.span, &user_unit.sources);
-
+    callables
+        .flat_map(|(item, range, namespace, name, is_entry_point)| {
             if is_entry_point {
                 vec![
                     CodeLens {
@@ -83,10 +86,13 @@ pub(crate) fn get_code_lenses(
                     },
                 ]
             } else {
-                if let Some(args) = operation_circuit_info(decl, namespace, internal) {
+                if let Some((_, total_num_qubits)) = qubit_param_info(item) {
                     return vec![CodeLens {
                         range,
-                        command: CodeLensCommand::Circuit(Some(args)),
+                        command: CodeLensCommand::Circuit(Some(OperationInfo {
+                            operation: format!("{namespace}.{name}"),
+                            total_num_qubits,
+                        })),
                     }];
                 }
                 vec![]
