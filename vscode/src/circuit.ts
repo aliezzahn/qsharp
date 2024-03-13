@@ -3,7 +3,7 @@
 
 import { getCompilerWorker, log } from "qsharp-lang";
 import { Uri, window } from "vscode";
-import { isQsharpDocument } from "./common";
+import { basename, isQsharpDocument } from "./common";
 import { loadProject } from "./projectSystem";
 import type { IOperationInfo } from "../../npm/lib/web/qsc_wasm";
 import { getTarget, getTargetFriendlyName } from "./config";
@@ -42,7 +42,7 @@ export async function showCircuitCommand(
     title = `${operation.operation} with ${operation.totalNumQubits} input qubits`;
     subtitle = `${getTargetFriendlyName(targetProfile)} `;
   } else {
-    title = editor.document.uri.path.split("/").pop() || "Circuit";
+    title = basename(editor.document.uri.path) || "Circuit";
     subtitle = `${getTargetFriendlyName(targetProfile)}`;
   }
 
