@@ -106,7 +106,7 @@ pub fn init_logging(callback: JsValue, level: i32) -> Result<(), JsError> {
     // The below will return an error if it was already set
     log::set_logger(&MY_LOGGER).map_err(|e| JsError::new(&e.to_string()))?;
     // Most of the stack trace is just the logging code
-    ERROR.set_stack_trace_limit(20);
+    Error::set_stack_trace_limit(20);
     std::panic::set_hook(Box::new(hook));
 
     set_log_level(level);
