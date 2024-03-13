@@ -11,24 +11,17 @@ use log::LevelFilter;
 #[wasm_bindgen]
 extern "C" {
     type Error;
-
     #[wasm_bindgen(constructor)]
     fn new() -> Error;
 
     #[wasm_bindgen(structural, method, getter)]
     fn stack(error: &Error) -> String;
 
-    // We use this method to access static properties on Error
-    type ErrorConstructor;
-    #[wasm_bindgen(js_name = Error)]
-    static ERROR: ErrorConstructor;
+    #[wasm_bindgen(static_method_of = Error, getter = stackTraceLimit)]
+    fn get_stack_trace_limit() -> Option<u32>;
 
-    // TODO: use #[wasm_bindgen(static_method_of = Object)]
-    #[wasm_bindgen(method, getter  = stackTraceLimit)]
-    fn get_stack_trace_limit(this: &ErrorConstructor) -> Option<u32>;
-
-    #[wasm_bindgen(method, setter = stackTraceLimit)]
-    fn set_stack_trace_limit(this: &ErrorConstructor, val: u32);
+    #[wasm_bindgen(static_method_of = Error, setter = stackTraceLimit)]
+    fn set_stack_trace_limit(val: u32);
 }
 
 static MY_LOGGER: MyLogger = MyLogger;
@@ -78,7 +71,14 @@ pub fn hook(info: &std::panic::PanicInfo) {
     // for capturing the JS stack as well as the panic info
     let mut msg = info.to_string();
     msg.push_str("\n\nStack:\n\n");
+
+    // In debug builds, the logging and panic handling code itself takes
+    // up over 10 frames. Increase the stack trace limit temporarily.
+    let prev_limit = Error::get_stack_trace_limit().unwrap_or(10);
+    Error::set_stack_trace_limit(prev_limit.max(20));
     let e = Error::new();
+    Error::set_stack_trace_limit(prev_limit);
+
     let stack = e.stack();
     msg.push_str(&stack);
     msg.push_str("\n\n");
@@ -104,8 +104,6 @@ pub fn init_logging(callback: JsValue, level: i32) -> Result<(), JsError> {
 
     // The below will return an error if it was already set
     log::set_logger(&MY_LOGGER).map_err(|e| JsError::new(&e.to_string()))?;
-    // Most of the stack trace is just the logging code
-    ERROR.set_stack_trace_limit(20);
     std::panic::set_hook(Box::new(hook));
 
     set_log_level(level);

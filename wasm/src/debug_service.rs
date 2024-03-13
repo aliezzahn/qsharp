@@ -8,7 +8,7 @@ use qsc::interpret::{Debugger, Error, StepAction, StepResult};
 use qsc::line_column::Encoding;
 use qsc::{fmt_complex, target::Profile, LanguageFeatures};
 
-use crate::line_column::Range;
+use crate::line_column::{Location, Range};
 use crate::{get_source_map, serializable_type, CallbackReceiver};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -75,11 +75,10 @@ impl DebugService {
 
         StackFrameList {
             frames: frames
-                .iter()
+                .into_iter()
                 .map(|s| StackFrame {
                     name: format!("{} {}", s.name, s.functor),
-                    path: s.path.clone(),
-                    range: s.range.into(),
+                    location: s.location.into(),
                 })
                 .collect(),
         }
@@ -331,13 +330,11 @@ serializable_type! {
     StackFrame,
     {
         pub name: String,
-        pub path: String,
-        pub range: Range
+        pub location: Location
     },
     r#"export interface IStackFrame {
         name: string;
-        path: string;
-        range: IRange;
+        location: ILocation
     }"#
 }
 
