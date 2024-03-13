@@ -4,6 +4,7 @@
 mod baseprofck;
 mod borrowck;
 mod callable_limits;
+mod capabilitiesck;
 mod common;
 mod conjugate_invert;
 mod entry_point;
@@ -15,6 +16,7 @@ mod replace_qubit_allocation;
 mod spec_gen;
 
 use callable_limits::CallableLimits;
+pub use capabilitiesck::check_supported_capabilities;
 use entry_point::generate_entry_expr;
 use loop_unification::LoopUni;
 use miette::Diagnostic;
