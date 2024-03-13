@@ -11,7 +11,10 @@ use crate::{
 };
 use qsc::{
     circuit::qubit_param_info,
-    hir::{Attr, ItemKind, Visibility},
+    hir::{
+        ty::{Prim, Ty},
+        Attr, ItemKind, Visibility,
+    },
     line_column::Encoding,
 };
 
