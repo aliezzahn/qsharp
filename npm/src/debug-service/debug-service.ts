@@ -98,6 +98,24 @@ export class QSharpDebugService implements IDebugService {
     return this.debugService.get_circuit();
   }
 
+  async getBreakpoints(path: string): Promise<IBreakpointSpan[]> {
+    return this.debugService.get_breakpoints(path).spans;
+  }
+
+  async getLocalVariables(): Promise<Array<IVariable>> {
+    const variable_list = this.debugService.get_locals();
+    return variable_list.variables;
+  }
+
+  async captureQuantumState(): Promise<Array<IQuantumState>> {
+    const state = this.debugService.capture_quantum_state();
+    return state.entries;
+  }
+
+  async getCircuit(): Promise<object> {
+    return this.debugService.get_circuit();
+  }
+
   async getStackFrames(): Promise<IStackFrame[]> {
     return this.debugService.get_stack_frames().frames;
   }

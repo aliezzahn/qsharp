@@ -207,7 +207,7 @@ export function createProxyInternal<
     }
     if (!curr) {
       // Nothing else queued, signal that we're now idle and exit.
-      log.debug("Proxy: Worker queue is empty");
+      log.trace("Proxy: Worker queue is empty");
       setState("idle");
       return;
     }
@@ -217,7 +217,7 @@ export function createProxyInternal<
       setState("busy");
     }
 
-    log.debug("Proxy: Posting message to worker: %o", msg);
+    log.trace("Proxy: Posting message to worker: %o", msg);
     postMessage(msg);
   }
 
@@ -227,8 +227,8 @@ export function createProxyInternal<
       | EventMessage<TServiceEventMsg>
       | CommonEventMessage,
   ) {
-    if (log.getLogLevel() >= 4)
-      log.debug("Proxy: Received message from worker: %s", JSON.stringify(msg));
+    if (log.getLogLevel() >= 5)
+      log.trace("Proxy: Received message from worker: %s", JSON.stringify(msg));
 
     if (msg.messageType === "common-event") {
       const commonEvent = msg; // assignment is necessary here for TypeScript to narrow the type
@@ -250,7 +250,7 @@ export function createProxyInternal<
       const event = new Event(msg.type) as Event & TServiceEventMsg;
       event.detail = msg.detail;
 
-      log.debug("Proxy: Posting event: %o", msg);
+      log.trace("Proxy: Posting event: %o", msg);
       // Post to a currently attached event target if there's a "requestWithProgress"
       // in progress
       curr?.requestEventTarget?.dispatchEvent(event);
@@ -372,7 +372,7 @@ function createDispatcher<
   function logAndPost(
     msg: ResponseMessage<TService> | EventMessage<TServiceEventMsg>,
   ) {
-    log.debug(
+    log.trace(
       "Worker: Sending %s message from worker: %o",
       msg.messageType,
       msg,

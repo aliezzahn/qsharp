@@ -100,3 +100,31 @@ pub(crate) fn get_code_lenses(
         })
         .collect()
 }
+
+fn qubit_arg_dimensions(input: &Ty) -> Vec<usize> {
+    match input {
+        Ty::Array(ty) => {
+            if let Some(s) = get_array_dimension(ty) {
+                return vec![s + 1];
+            }
+        }
+        Ty::Prim(Prim::Qubit) => return vec![0],
+        Ty::Tuple(tys) => {
+            let params = tys.iter().map(get_array_dimension).collect::<Vec<_>>();
+
+            if params.iter().all(Option::is_some) {
+                return params.into_iter().map(Option::unwrap).collect();
+            }
+        }
+        _ => {}
+    }
+    vec![]
+}
+
+fn get_array_dimension(input: &Ty) -> Option<usize> {
+    match input {
+        Ty::Prim(Prim::Qubit) => Some(0),
+        Ty::Array(ty) => get_array_dimension(ty).map(|d| d + 1),
+        _ => None,
+    }
+}
