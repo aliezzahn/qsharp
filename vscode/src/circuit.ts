@@ -9,8 +9,7 @@ import type { IOperationInfo } from "../../npm/lib/web/qsc_wasm";
 import { getTarget, getTargetFriendlyName } from "./config";
 import { sendMessageToPanel } from "./webviewPanel";
 
-// const compilerRunTimeoutMs = 1000 * 60 * 5; // 5 minutes
-const compilerRunTimeoutMs = 1;
+const compilerRunTimeoutMs = 1000 * 60 * 5; // 5 minutes
 
 export async function showCircuitCommand(
   extensionUri: Uri,
