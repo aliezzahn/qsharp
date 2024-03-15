@@ -16,11 +16,12 @@ use crate::{
 };
 use qsc_ast::{
     assigner::Assigner as AstAssigner,
-    ast::{self, Stmt, TopLevelNode},
+    ast::{self},
     mut_visit::MutVisitor,
     validate::Validator as AstValidator,
     visit::Visitor as AstVisitor,
 };
+use qsc_data_structures::language_features::LanguageFeatures;
 use qsc_hir::{
     assigner::Assigner as HirAssigner,
     hir::{self, PackageId},
@@ -38,6 +39,7 @@ pub struct Compiler {
     checker: Checker,
     lowerer: Lowerer,
     capabilities: RuntimeCapabilityFlags,
+    language_features: LanguageFeatures,
 }
 
 pub type Error = WithSource<compile::Error>;
@@ -57,6 +59,7 @@ impl Compiler {
         store: &PackageStore,
         dependencies: impl IntoIterator<Item = PackageId>,
         capabilities: RuntimeCapabilityFlags,
+        language_features: LanguageFeatures,
     ) -> Self {
         let mut resolve_globals = resolve::GlobalTable::new();
         let mut typeck_globals = typeck::GlobalTable::new();
@@ -82,6 +85,7 @@ impl Compiler {
             checker: Checker::new(typeck_globals),
             lowerer: Lowerer::new(),
             capabilities,
+            language_features,
         }
     }
 
@@ -111,8 +115,12 @@ impl Compiler {
     where
         F: FnMut(Vec<Error>) -> Result<(), E>,
     {
-        let (mut ast, parse_errors) =
-            Self::parse_fragments(&mut unit.sources, source_name, source_contents);
+        let (mut ast, parse_errors) = Self::parse_fragments(
+            &mut unit.sources,
+            source_name,
+            source_contents,
+            self.language_features,
+        );
 
         accumulate_errors(parse_errors)?;
 
@@ -141,14 +149,13 @@ impl Compiler {
     /// get information about the newly added items, or do other modifications.
     /// It is then the caller's responsibility to merge
     /// these packages into the current `CompileUnit`.
-    pub fn compile_expr(
+    pub fn compile_entry_expr(
         &mut self,
         unit: &mut CompileUnit,
-        source_name: &str,
         source_contents: &str,
     ) -> Result<Increment, Vec<Error>> {
         let (mut ast, parse_errors) =
-            Self::parse_expr(&mut unit.sources, source_name, source_contents);
+            Self::parse_entry_expr(&mut unit.sources, source_contents, self.language_features);
 
         if !parse_errors.is_empty() {
             return Err(parse_errors);
@@ -235,9 +242,6 @@ impl Compiler {
     /// Entry expressions are ignored.
     #[must_use]
     fn concat_ast(&mut self, mut left: ast::Package, right: ast::Package) -> ast::Package {
-        assert!(right.entry.is_none(), "package should not have entry expr");
-        assert!(left.entry.is_none(), "package should not have entry expr");
-
         let mut nodes = Vec::with_capacity(left.nodes.len() + right.nodes.len());
         nodes.extend(left.nodes.into_vec());
         nodes.extend(right.nodes.into_vec());
@@ -248,29 +252,22 @@ impl Compiler {
         left
     }
 
-    fn parse_expr(
+    fn parse_entry_expr(
         sources: &mut SourceMap,
-        source_name: &str,
         source_contents: &str,
+        language_features: LanguageFeatures,
     ) -> (ast::Package, Vec<Error>) {
-        let offset = sources.push(source_name.into(), source_contents.into());
+        let offset = sources.push("<entry>".into(), source_contents.into());
 
-        let (expr, errors) = qsc_parse::expr(source_contents);
-        let mut stmt = Box::new(Stmt {
-            id: ast::NodeId::default(),
-            span: expr.span,
-            kind: Box::new(ast::StmtKind::Expr(expr)),
-        });
+        let (mut expr, errors) = qsc_parse::expr(source_contents, language_features);
 
         let mut offsetter = Offsetter(offset);
-        offsetter.visit_stmt(&mut stmt);
-
-        let top_level_nodes = Box::new([TopLevelNode::Stmt(stmt)]);
+        offsetter.visit_expr(&mut expr);
 
         let package = ast::Package {
             id: ast::NodeId::default(),
-            nodes: top_level_nodes,
-            entry: None,
+            nodes: Box::default(),
+            entry: Some(expr),
         };
 
         (package, with_source(errors, sources, offset))
@@ -280,10 +277,11 @@ impl Compiler {
         sources: &mut SourceMap,
         source_name: &str,
         source_contents: &str,
+        features: LanguageFeatures,
     ) -> (ast::Package, Vec<Error>) {
         let offset = sources.push(source_name.into(), source_contents.into());
 
-        let (mut top_level_nodes, errors) = qsc_parse::top_level_nodes(source_contents);
+        let (mut top_level_nodes, errors) = qsc_parse::top_level_nodes(source_contents, features);
         let mut offsetter = Offsetter(offset);
         for node in &mut top_level_nodes {
             match node {

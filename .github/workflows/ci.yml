@@ -20,7 +20,7 @@ env:
   CARGO_TERM_COLOR: always
   NODE_VERSION: "18.17.1"
   PYTHON_VERSION: "3.11"
-  RUST_TOOLCHAIN_VERSION: "1.75"
+  RUST_TOOLCHAIN_VERSION: "1.76"
   RUST_TOOLCHAIN_COMPONENTS: rustfmt clippy
 
 jobs:
@@ -74,12 +74,7 @@ jobs:
     name: Build and test
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        is_pr:
-          - ${{ github.event_name == 'pull_request' }}
-        exclude:
-          - os: macos-latest
-            is_pr: true
+        os: [windows-latest, ubuntu-latest, macos-14]
 
     runs-on: ${{matrix.os}}
 
@@ -94,8 +89,8 @@ jobs:
           components: ${{ env.RUST_TOOLCHAIN_COMPONENTS }}
       - name: Add additional Rust targets
         run: |
-          rustup target add aarch64-apple-darwin
-        if: matrix.os == 'macos-latest'
+          rustup target add x86_64-apple-darwin
+        if: matrix.os == 'macos-14'
       - uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -113,12 +108,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-        is_pr:
-          - ${{ github.event_name == 'pull_request' }}
-        exclude:
-          - os: macos-latest
-            is_pr: true
+        os: [windows-latest, ubuntu-latest, macos-14]
 
     runs-on: ${{matrix.os}}
 
@@ -133,8 +123,8 @@ jobs:
           components: ${{ env.RUST_TOOLCHAIN_COMPONENTS }}
       - name: Add additional Rust targets
         run: |
-          rustup target add aarch64-apple-darwin
-        if: matrix.os == 'macos-latest'
+          rustup target add x86_64-apple-darwin
+        if: matrix.os == 'macos-14'
       - uses: actions/setup-python@v4
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -145,11 +135,14 @@ jobs:
       - name: Prereqs
         run: python ./prereqs.py --install
       - name: Run integration tests
-        run: python ./build.py --no-check --no-test --wasm --npm --vscode --integration-tests
+        run: python ./build.py --no-check --no-test --wasm --npm --vscode --pip --widgets --integration-tests
 
   runBenchmark:
     name: run benchmark
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v3
       - uses: boa-dev/criterion-compare-action@v3
@@ -161,6 +154,9 @@ jobs:
   runMemoryProfile:
     name: run memory profile
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v2
         with:
@@ -194,10 +190,11 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   body: `_Change in memory usage detected by benchmark._
-                ## Memory Report for ${{ github.sha }}
-                | Test                        | This Branch | On Main  |
-                |-----------------------------|-------------|----------|
-                | compile core + standard lib | ${{ env.BRANCH_MEASUREMENT }} bytes | ${{ env.MAIN_MEASUREMENT }} bytes |`
+            ## Memory Report for ${{ github.sha }}
+
+            | Test                        | This Branch | On Main  |
+            |-----------------------------|-------------|----------|
+            | compile core + standard lib | ${{ env.BRANCH_MEASUREMENT }} bytes | ${{ env.MAIN_MEASUREMENT }} bytes |`
                 })
               } catch (err) {
                 core.warning(`Failed writing comment on GitHub issue: ${err}`)

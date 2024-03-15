@@ -114,9 +114,9 @@ namespace Microsoft.Quantum.Intrinsic {
         }
     }
 
-    /// Collects the given list of control qubits into one or two of the given auxiliarly qubits, using
+    /// Collects the given list of control qubits into one or two of the given auxiliary qubits, using
     /// all but the last qubits in the auxiliary list as scratch qubits. The auxiliary list must be
-    /// big enough to accomodate the data, so it is usually smaller than controls list by number of
+    /// big enough to accommodate the data, so it is usually smaller than controls list by number of
     /// qubits needed for the eventual controlled unitary application. The passed adjustment value is
     /// used to ensure the right number of auxiliary qubits are processed.
     ///
@@ -125,13 +125,13 @@ namespace Microsoft.Quantum.Intrinsic {
     internal operation CollectControls(ctls : Qubit[], aux : Qubit[], adjustment : Int) : Unit is Adj {
         // First collect the controls into the first part of the auxiliary list.
         for i in 0..2..(Length(ctls) - 2) {
-            PhaseCCX(ctls[i], ctls[i + 1], aux[i / 2]);
+            AND(ctls[i], ctls[i + 1], aux[i / 2]);
         }
         // Then collect the auxiliary qubits in the first part of the list forward into the last
         // qubit of the auxiliary list. The adjustment is used to allow the caller to reduce or increase
         // the number of times this is run based on the eventual number of control qubits needed.
         for i in 0..((Length(ctls) / 2) - 2 - adjustment) {
-            PhaseCCX(aux[i * 2], aux[(i * 2) + 1], aux[i + Length(ctls) / 2]);
+            AND(aux[i * 2], aux[(i * 2) + 1], aux[i + Length(ctls) / 2]);
         }
     }
 
@@ -139,8 +139,26 @@ namespace Microsoft.Quantum.Intrinsic {
     /// last control and the second to last auxiliary will be collected into the last auxiliary.
     internal operation AdjustForSingleControl(ctls : Qubit[], aux : Qubit[]) : Unit is Adj {
         if Length(ctls) % 2 != 0 {
-            PhaseCCX(ctls[Length(ctls) - 1], aux[Length(ctls) - 3], aux[Length(ctls) - 2]);
+            AND(ctls[Length(ctls) - 1], aux[Length(ctls) - 3], aux[Length(ctls) - 2]);
         }
+    }
+
+    @Config(Unrestricted)
+    internal operation AND(control1 : Qubit, control2 : Qubit, target : Qubit) : Unit is Adj {
+        body ... {
+            CCNOT(control1, control2, target);
+        }
+        adjoint ... {
+            H(target);
+            if MResetZ(target) == One {
+                Controlled Z([control1], control2);
+            }
+        }
+    }
+
+    @Config(Base)
+    internal operation AND(control1 : Qubit, control2 : Qubit, target : Qubit) : Unit is Adj {
+        PhaseCCX(control1, control2, target);
     }
 
     internal operation PhaseCCX(control1 : Qubit, control2 : Qubit, target : Qubit) : Unit is Adj {

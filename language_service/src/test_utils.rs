@@ -9,8 +9,9 @@ use qsc::{
     hir::PackageId,
     incremental::Compiler,
     line_column::{Encoding, Position, Range},
+    location::Location,
     target::Profile,
-    PackageStore, PackageType, SourceMap, Span,
+    LanguageFeatures, PackageStore, PackageType, SourceMap, Span,
 };
 
 pub(crate) fn compile_with_fake_stdlib_and_markers(
@@ -21,15 +22,50 @@ pub(crate) fn compile_with_fake_stdlib_and_markers(
     (
         compilation,
         cursor_offset,
-        target_spans.iter().map(|(_, s)| *s).collect(),
+        target_spans.iter().map(|l| l.range).collect(),
     )
+}
+
+pub(crate) fn compile_with_fake_stdlib_and_markers_no_cursor(
+    source_with_markers: &str,
+) -> (Compilation, Vec<Range>) {
+    let (compilation, target_spans) = compile_project_with_fake_stdlib_and_markers_no_cursor(&[(
+        "<source>",
+        source_with_markers,
+    )]);
+    (compilation, target_spans.iter().map(|l| l.range).collect())
 }
 
 pub(crate) fn compile_project_with_fake_stdlib_and_markers(
     sources_with_markers: &[(&str, &str)],
-) -> (Compilation, String, Position, Vec<(String, Range)>) {
-    let (sources, cursor_uri, cursor_offset, target_spans) =
-        get_sources_and_markers(sources_with_markers);
+) -> (Compilation, String, Position, Vec<Location>) {
+    let (compilation, cursor_location, target_spans) =
+        compile_project_with_fake_stdlib_and_markers_cursor_optional(sources_with_markers);
+
+    let (cursor_uri, cursor_offset) =
+        cursor_location.expect("input string should have a cursor marker");
+
+    (compilation, cursor_uri, cursor_offset, target_spans)
+}
+
+pub(crate) fn compile_project_with_fake_stdlib_and_markers_no_cursor(
+    sources_with_markers: &[(&str, &str)],
+) -> (Compilation, Vec<Location>) {
+    let (compilation, cursor_location, target_spans) =
+        compile_project_with_fake_stdlib_and_markers_cursor_optional(sources_with_markers);
+
+    assert!(
+        cursor_location.is_none(),
+        "did not expect cursor marker in input string"
+    );
+
+    (compilation, target_spans)
+}
+
+fn compile_project_with_fake_stdlib_and_markers_cursor_optional(
+    sources_with_markers: &[(&str, &str)],
+) -> (Compilation, Option<(String, Position)>, Vec<Location>) {
+    let (sources, cursor_location, target_spans) = get_sources_and_markers(sources_with_markers);
 
     let source_map = SourceMap::new(sources, None);
     let (mut package_store, std_package_id) = compile_fake_stdlib();
@@ -39,6 +75,7 @@ pub(crate) fn compile_project_with_fake_stdlib_and_markers(
         source_map,
         PackageType::Exe,
         Profile::Unrestricted.into(),
+        LanguageFeatures::default(),
     );
 
     let package_id = package_store.insert(unit);
@@ -50,23 +87,23 @@ pub(crate) fn compile_project_with_fake_stdlib_and_markers(
             kind: CompilationKind::OpenProject,
             errors,
         },
-        cursor_uri,
-        cursor_offset,
+        cursor_location,
         target_spans,
     )
 }
 
 pub(crate) fn compile_notebook_with_fake_stdlib_and_markers(
     cells_with_markers: &[(&str, &str)],
-) -> (Compilation, String, Position, Vec<(String, Range)>) {
-    let (cells, cell_uri, offset, target_spans) = get_sources_and_markers(cells_with_markers);
+) -> (Compilation, String, Position, Vec<Location>) {
+    let (cells, cursor_location, target_spans) = get_sources_and_markers(cells_with_markers);
+    let (cell_uri, offset) = cursor_location.expect("input string should have a cursor marker");
 
     let compilation =
         compile_notebook_with_fake_stdlib(cells.iter().map(|c| (c.0.as_ref(), c.1.as_ref())));
     (compilation, cell_uri, offset, target_spans)
 }
 
-fn compile_notebook_with_fake_stdlib<'a, I>(cells: I) -> Compilation
+pub(crate) fn compile_notebook_with_fake_stdlib<'a, I>(cells: I) -> Compilation
 where
     I: Iterator<Item = (&'a str, &'a str)>,
 {
@@ -90,6 +127,7 @@ where
         std_source_map,
         PackageType::Lib,
         Profile::Unrestricted.into(),
+        LanguageFeatures::default(),
     )
     .expect("expected incremental compiler creation to succeed");
 
@@ -151,6 +189,7 @@ fn compile_fake_stdlib() -> (PackageStore, PackageId) {
         std_source_map,
         PackageType::Lib,
         Profile::Unrestricted.into(),
+        LanguageFeatures::default(),
     );
     assert!(std_errors.is_empty());
     let std_package_id = package_store.insert(std_compile_unit);
@@ -162,9 +201,8 @@ fn get_sources_and_markers(
     sources: &[(&str, &str)],
 ) -> (
     Vec<(Arc<str>, Arc<str>)>,
-    String,
-    Position,
-    Vec<(String, Range)>,
+    Option<(String, Position)>,
+    Vec<Location>,
 ) {
     let (mut cursor_uri, mut cursor_offset, mut target_spans) = (None, None, Vec::new());
     let sources = sources
@@ -189,20 +227,22 @@ fn get_sources_and_markers(
             }
             if !targets.is_empty() {
                 for span in target_offsets_to_spans(&targets) {
-                    target_spans.push((
-                        s.0.to_string(),
-                        Range::from_span(Encoding::Utf8, &source, &span),
-                    ));
+                    target_spans.push(Location {
+                        source: s.0.into(),
+                        range: Range::from_span(Encoding::Utf8, &source, &span),
+                    });
                 }
             }
             (Arc::from(s.0), Arc::from(source.as_ref()))
         })
         .collect();
-    let cursor_uri = cursor_uri
-        .expect("input should have a cursor marker")
-        .to_string();
-    let cursor_offset = cursor_offset.expect("input string should have a cursor marker");
-    (sources, cursor_uri, cursor_offset, target_spans)
+    let cursor_location = cursor_uri.map(|cursor_uri| {
+        (
+            cursor_uri.into(),
+            cursor_offset.expect("cursor offset should be set"),
+        )
+    });
+    (sources, cursor_location, target_spans)
 }
 
 fn get_source_and_marker_offsets(source_with_markers: &str) -> (String, Vec<u32>, Vec<u32>) {
@@ -227,7 +267,7 @@ fn get_source_and_marker_offsets(source_with_markers: &str) -> (String, Vec<u32>
     (source, cursor_offsets, target_offsets)
 }
 
-fn target_offsets_to_spans(target_offsets: &Vec<u32>) -> Vec<Span> {
+fn target_offsets_to_spans(target_offsets: &[u32]) -> Vec<Span> {
     assert!(target_offsets.len() % 2 == 0);
     let limit = target_offsets.len() / 2;
     let mut spans = vec![];

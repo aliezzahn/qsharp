@@ -12,6 +12,7 @@ mod debugger_tests;
 pub use qsc_eval::{
     debug::Frame,
     output::{self, GenericReceiver},
+    val::Result,
     val::Value,
     StepAction, StepResult,
 };
@@ -19,6 +20,7 @@ pub use qsc_eval::{
 use crate::{
     error::{self, WithStack},
     incremental::Compiler,
+    location::Location,
 };
 use debug::format_call_stack;
 use miette::Diagnostic;
@@ -26,6 +28,7 @@ use num_bigint::BigUint;
 use num_complex::Complex;
 use qsc_codegen::qir_base::BaseProfSim;
 use qsc_data_structures::{
+    language_features::LanguageFeatures,
     line_column::{Encoding, Range},
     span::Span,
 };
@@ -111,8 +114,7 @@ pub struct Interpreter {
     env: Env,
 }
 
-#[allow(clippy::module_name_repetitions)]
-pub type InterpretResult = Result<Value, Vec<Error>>;
+pub type InterpretResult = std::result::Result<Value, Vec<Error>>;
 
 impl Interpreter {
     /// Creates a new incremental compiler, compiling the passed in sources.
@@ -123,12 +125,13 @@ impl Interpreter {
         sources: SourceMap,
         package_type: PackageType,
         capabilities: RuntimeCapabilityFlags,
-    ) -> Result<Self, Vec<Error>> {
+        language_features: LanguageFeatures,
+    ) -> std::result::Result<Self, Vec<Error>> {
         let mut lowerer = qsc_eval::lower::Lowerer::new();
         let mut fir_store = fir::PackageStore::new();
 
-        let compiler =
-            Compiler::new(std, sources, package_type, capabilities).map_err(into_errors)?;
+        let compiler = Compiler::new(std, sources, package_type, capabilities, language_features)
+            .map_err(into_errors)?;
 
         for (id, unit) in compiler.package_store() {
             fir_store.insert(
@@ -166,7 +169,10 @@ impl Interpreter {
     /// Executes the entry expression until the end of execution.
     /// # Errors
     /// Returns a vector of errors if evaluating the entry point fails.
-    pub fn eval_entry(&mut self, receiver: &mut impl Receiver) -> Result<Value, Vec<Error>> {
+    pub fn eval_entry(
+        &mut self,
+        receiver: &mut impl Receiver,
+    ) -> std::result::Result<Value, Vec<Error>> {
         let expr = self.get_entry_expr()?;
         eval(
             self.source_package,
@@ -186,7 +192,7 @@ impl Interpreter {
         &mut self,
         sim: &mut impl Backend<ResultType = impl Into<val::Result>>,
         receiver: &mut impl Receiver,
-    ) -> Result<Value, Vec<Error>> {
+    ) -> std::result::Result<Value, Vec<Error>> {
         let expr = self.get_entry_expr()?;
         if self.quantum_seed.is_some() {
             sim.set_seed(self.quantum_seed);
@@ -203,11 +209,8 @@ impl Interpreter {
         )
     }
 
-    fn get_entry_expr(&self) -> Result<ExprId, Vec<Error>> {
-        let unit = self
-            .fir_store
-            .get(self.source_package)
-            .expect("store should have package");
+    fn get_entry_expr(&self) -> std::result::Result<ExprId, Vec<Error>> {
+        let unit = self.fir_store.get(self.source_package);
         if let Some(entry) = unit.entry {
             return Ok(entry);
         };
@@ -264,7 +267,7 @@ impl Interpreter {
         &mut self,
         receiver: &mut impl Receiver,
         expr: &str,
-    ) -> Result<InterpretResult, Vec<Error>> {
+    ) -> std::result::Result<InterpretResult, Vec<Error>> {
         self.run_with_sim(&mut SparseSim::new(), receiver, expr)
     }
 
@@ -275,7 +278,7 @@ impl Interpreter {
 
     /// Performs QIR codegen using the given entry expression on a new instance of the environment
     /// and simulator but using the current compilation.
-    pub fn qirgen(&mut self, expr: &str) -> Result<String, Vec<Error>> {
+    pub fn qirgen(&mut self, expr: &str) -> std::result::Result<String, Vec<Error>> {
         if self.capabilities != RuntimeCapabilityFlags::empty() {
             return Err(vec![Error::UnsupportedRuntimeCapabilities]);
         }
@@ -296,8 +299,9 @@ impl Interpreter {
         sim: &mut impl Backend<ResultType = impl Into<val::Result>>,
         receiver: &mut impl Receiver,
         expr: &str,
-    ) -> Result<InterpretResult, Vec<Error>> {
-        let stmt_id = self.compile_expr_to_stmt(expr)?;
+    ) -> std::result::Result<InterpretResult, Vec<Error>> {
+        let expr_id = self.compile_entry_expr(expr)?;
+
         if self.quantum_seed.is_some() {
             sim.set_seed(self.quantum_seed);
         }
@@ -305,7 +309,7 @@ impl Interpreter {
         Ok(eval(
             self.package,
             self.classical_seed,
-            stmt_id.into(),
+            expr_id.into(),
             self.compiler.package_store(),
             &self.fir_store,
             &mut Env::default(),
@@ -314,10 +318,21 @@ impl Interpreter {
         ))
     }
 
-    fn compile_expr_to_stmt(&mut self, expr: &str) -> Result<StmtId, Vec<Error>> {
-        let increment = self.compiler.compile_expr(expr).map_err(into_errors)?;
+    fn compile_entry_expr(&mut self, expr: &str) -> std::result::Result<ExprId, Vec<Error>> {
+        let increment = self
+            .compiler
+            .compile_entry_expr(expr)
+            .map_err(into_errors)?;
 
-        let stmts = self.lower(&increment);
+        // `lower` will update the entry expression in the FIR store,
+        // and it will always return an empty list of statements.
+        let _ = self.lower(&increment);
+
+        // The AST and HIR packages in `increment` only contain an entry
+        // expression and no statements. The HIR *can* contain items if the entry
+        // expression defined any items.
+        assert!(increment.hir.stmts.is_empty());
+        assert!(increment.ast.package.nodes.is_empty());
 
         // Updating the compiler state with the new AST/HIR nodes
         // is not necessary for the interpreter to function, as all
@@ -327,17 +342,14 @@ impl Interpreter {
         // here to keep the package stores consistent.
         self.compiler.update(increment);
 
-        assert!(stmts.len() == 1, "expected exactly one statement");
-        let stmt_id = stmts.first().expect("expected exactly one statement");
+        let unit = self.fir_store.get(self.package);
+        let entry = unit.entry.expect("package should have an entry expression");
 
-        Ok(*stmt_id)
+        Ok(entry)
     }
 
     fn lower(&mut self, unit_addition: &qsc_frontend::incremental::Increment) -> Vec<StmtId> {
-        let fir_package = self
-            .fir_store
-            .get_mut(self.package)
-            .expect("package should be in store");
+        let fir_package = self.fir_store.get_mut(self.package);
         self.lowerer
             .lower_and_update_package(fir_package, &unit_addition.hir)
     }
@@ -365,8 +377,15 @@ impl Debugger {
         sources: SourceMap,
         capabilities: RuntimeCapabilityFlags,
         position_encoding: Encoding,
-    ) -> Result<Self, Vec<Error>> {
-        let interpreter = Interpreter::new(true, sources, PackageType::Exe, capabilities)?;
+        language_features: LanguageFeatures,
+    ) -> std::result::Result<Self, Vec<Error>> {
+        let interpreter = Interpreter::new(
+            true,
+            sources,
+            PackageType::Exe,
+            capabilities,
+            language_features,
+        )?;
         let source_package_id = interpreter.source_package;
         Ok(Self {
             interpreter,
@@ -380,7 +399,7 @@ impl Debugger {
     /// a step action the system is already in the correct state.
     /// # Errors
     /// Returns a vector of errors if loading the entry point fails.
-    pub fn set_entry(&mut self) -> Result<(), Vec<Error>> {
+    pub fn set_entry(&mut self) -> std::result::Result<(), Vec<Error>> {
         let expr = self.interpreter.get_entry_expr()?;
         qsc_eval::eval_push_expr(&mut self.state, expr);
         Ok(())
@@ -394,7 +413,7 @@ impl Debugger {
         receiver: &mut impl Receiver,
         breakpoints: &[StmtId],
         step: StepAction,
-    ) -> Result<StepResult, Vec<Error>> {
+    ) -> std::result::Result<StepResult, Vec<Error>> {
         self.state
             .eval(
                 &self.interpreter.fir_store,
@@ -431,25 +450,15 @@ impl Debugger {
                     Global::Udt => "udt".into(),
                 };
 
-                let hir_package = self
-                    .interpreter
-                    .compiler
-                    .package_store()
-                    .get(map_fir_package_to_hir(frame.id.package))
-                    .expect("package should exist");
-                let source = hir_package
-                    .sources
-                    .find_by_offset(frame.span.lo)
-                    .expect("frame should have a source");
-                let path = source.name.to_string();
                 StackFrame {
                     name,
                     functor,
-                    path,
-                    range: Range::from_span(
+                    location: Location::from(
+                        frame.span,
+                        map_fir_package_to_hir(frame.id.package),
+                        self.interpreter.compiler.package_store(),
+                        map_fir_package_to_hir(self.interpreter.source_package),
                         self.position_encoding,
-                        &source.contents,
-                        &(frame.span - source.offset),
                     ),
                 }
             })
@@ -469,8 +478,7 @@ impl Debugger {
             let package = self
                 .interpreter
                 .fir_store
-                .get(self.interpreter.source_package)
-                .expect("package should have been lowered");
+                .get(self.interpreter.source_package);
             let mut collector = BreakpointCollector::new(
                 &unit.sources,
                 source.offset,
@@ -536,10 +544,8 @@ pub struct StackFrame {
     pub name: String,
     /// The functor of the callable.
     pub functor: String,
-    /// The path of the source file.
-    pub path: String,
-    /// The source range of the call site.
-    pub range: Range,
+    /// The source location of the call site.
+    pub location: Location,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

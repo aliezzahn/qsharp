@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 from enum import Enum
-from typing import Any, Callable, ClassVar, Tuple, Optional, Dict
+from typing import Any, Callable, ClassVar, Tuple, Optional, Dict, List
 
 class TargetProfile:
     """
@@ -31,6 +31,7 @@ class Interpreter:
     def __init__(
         self,
         target_profile: TargetProfile,
+        language_features: Optional[List[str]],
         manifest_descriptor: Optional[Dict[str, str]],
         read_file: Callable[[str], str],
         list_directory: Callable[[str], str],
@@ -105,7 +106,7 @@ class Interpreter:
             the seed will be generated from entropy.
         """
         ...
-    def dump_machine(self) -> StateDump:
+    def dump_machine(self) -> StateDumpData:
         """
         Returns the sparse state vector of the simulator as a StateDump object.
 
@@ -140,9 +141,9 @@ class Output:
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
     def _repr_html_(self) -> str: ...
-    def state_dump(self) -> Optional[StateDump]: ...
+    def state_dump(self) -> Optional[StateDumpData]: ...
 
-class StateDump:
+class StateDumpData:
     """
     A state dump returned from the Q# interpreter.
     """
@@ -154,11 +155,9 @@ class StateDump:
 
     """
     Get the amplitudes of the state vector as a dictionary from state integer to
-    pair of real and imaginary amplitudes.
+    complex amplitudes.
     """
     def get_dict(self) -> dict: ...
-    def __getitem__(self, index: int) -> Optional[Tuple[float, float]]: ...
-    def __len__(self) -> int: ...
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
     def _repr_html_(self) -> str: ...

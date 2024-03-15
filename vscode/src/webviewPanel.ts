@@ -203,7 +203,10 @@ export function registerWebViewCommands(context: ExtensionContext) {
       }, compilerRunTimeoutMs);
 
       try {
-        const sources = await loadProject(editor.document.uri);
+        const { sources, languageFeatures } = await loadProject(
+          editor.document.uri,
+        );
+
         const start = performance.now();
         sendTelemetryEvent(
           EventType.ResourceEstimationStart,
@@ -213,6 +216,7 @@ export function registerWebViewCommands(context: ExtensionContext) {
         const estimatesStr = await worker.getEstimates(
           sources,
           JSON.stringify(params),
+          languageFeatures,
         );
         sendTelemetryEvent(
           EventType.ResourceEstimationEnd,
@@ -234,10 +238,7 @@ export function registerWebViewCommands(context: ExtensionContext) {
         }
 
         (estimates as Array<any>).forEach(
-          (item, idx) =>
-            (item.jobParams.runName = `${runName} (${String.fromCharCode(
-              0x61 + idx,
-            )})`),
+          (item) => (item.jobParams.sharedRunName = runName),
         );
 
         clearTimeout(compilerTimeout);
@@ -343,10 +344,16 @@ export function registerWebViewCommands(context: ExtensionContext) {
           };
           sendMessageToPanel("histogram", false, message);
         });
-        const sources = await loadProject(editor.document.uri);
+        const { sources, languageFeatures } = await loadProject(
+          editor.document.uri,
+        );
         const start = performance.now();
         sendTelemetryEvent(EventType.HistogramStart, { associationId }, {});
-        await worker.run(sources, "", parseInt(numberOfShots), evtTarget);
+        const config = {
+          sources,
+          languageFeatures,
+        };
+        await worker.run(config, "", parseInt(numberOfShots), evtTarget);
         sendTelemetryEvent(
           EventType.HistogramEnd,
           { associationId },

@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from ._native import Interpreter, TargetProfile, StateDump, QSharpError, Output
+from ._native import Interpreter, TargetProfile, StateDumpData, QSharpError, Output
 from typing import Any, Callable, Dict, Optional, TypedDict, Union, List
 from .estimator._estimator import EstimatorResult, EstimatorParams
 import json
@@ -15,11 +15,12 @@ class Config:
     Configuration hints for the language service.
     """
 
-    def __init__(self, target_profile: TargetProfile):
+    def __init__(self, target_profile: TargetProfile, language_features: List[str]):
         if target_profile == TargetProfile.Unrestricted:
             self._config = {"targetProfile": "unrestricted"}
         elif target_profile == TargetProfile.Base:
             self._config = {"targetProfile": "base"}
+        self._config["languageFeatures"] = language_features
 
     def __repr__(self) -> str:
         return "Q# initialized with configuration: " + str(self._config)
@@ -41,6 +42,7 @@ def init(
     *,
     target_profile: TargetProfile = TargetProfile.Unrestricted,
     project_root: Optional[str] = None,
+    language_features: List[str] = [],
 ) -> Config:
     """
     Initializes the Q# interpreter.
@@ -81,13 +83,18 @@ def init(
                 f"Error parsing {qsharp_json}. qsharp.json should exist at the project root and be a valid JSON file."
             ) from e
 
+    # if no features were passed in as an argument, use the features from the manifest.
+    # this way we prefer the features from the argument over those from the manifest.
+    if language_features == [] and manifest_descriptor != None:
+        language_features = manifest_descriptor["manifest"].get("languageFeatures") or []
+
     _interpreter = Interpreter(
-        target_profile, manifest_descriptor, read_file, list_directory
+        target_profile, language_features, manifest_descriptor, read_file, list_directory
     )
 
     # Return the configuration information to provide a hint to the
     # language service through the cell output.
-    return Config(target_profile)
+    return Config(target_profile, language_features)
 
 
 def get_interpreter() -> Interpreter:
@@ -266,10 +273,46 @@ def set_classical_seed(seed: Optional[int]) -> None:
     """
     get_interpreter().set_classical_seed(seed)
 
+class StateDump:
+    """
+    A state dump returned from the Q# interpreter.
+    """
+
+    """
+    The number of allocated qubits at the time of the dump.
+    """
+    qubit_count: int
+
+    __inner: dict
+    __data: StateDumpData
+
+    def __init__(self, data: StateDumpData):
+        self.__data = data
+        self.__inner = data.get_dict()
+        self.qubit_count = data.qubit_count
+
+    def __getitem__(self, index: int) -> complex:
+        return self.__inner.__getitem__(index)
+
+    def __iter__(self):
+        return self.__inner.__iter__()
+
+    def __len__(self) -> int:
+        return len(self.__inner)
+
+    def __repr__(self) -> str:
+        return self.__data.__repr__()
+
+    def __str__(self) -> str:
+        return self.__data.__str__()
+
+    def _repr_html_(self) -> str:
+        return self.__data._repr_html_()
+
 def dump_machine() -> StateDump:
     """
     Returns the sparse state vector of the simulator as a StateDump object.
 
     :returns: The state of the simulator.
     """
-    return get_interpreter().dump_machine()
+    return StateDump(get_interpreter().dump_machine())

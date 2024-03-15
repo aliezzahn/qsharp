@@ -143,7 +143,7 @@ namespace Microsoft.Quantum.Unstable.Arithmetic {
     /// and Length(xs) ≤ Length(ys) = n.
     /// This operation uses the ripple-carry algorithm.
     /// Note that if Length(ys) >= Length(xs)+2, xs is padded with 0-initialized
-    /// qubits to match ys's length. The operation doesn't use any auxilliary
+    /// qubits to match ys's length. The operation doesn't use any auxiliary
     /// qubits otherwise.
     ///
     /// # References
@@ -267,7 +267,7 @@ namespace Microsoft.Quantum.Unstable.Arithmetic {
         Fact(zsLen >= xsLen, "Register `zs` must be no shorter than register `xs`.");
 
         // Since zs is zero-initialized, its bits at indexes higher than
-        // xsLen remain unsued as there will be no carry into them.
+        // xsLen remain unused as there will be no carry into them.
         let top = MinI(zsLen-2, xsLen-1);
         for k in 0 .. top {
             FullAdder(zs[k], xs[k], ys[k], zs[k + 1]);
@@ -369,7 +369,7 @@ namespace Microsoft.Quantum.Unstable.Arithmetic {
         Fact(c < 2L^ysLen, "Constant `c` must be smaller than 2^Length(ys).");
 
         if c != 0L {
-            // If c has j trailing zeroes than the j least significant
+            // If c has j trailing zeros, then the j least significant
             // bits of y won't be affected by the addition and can
             // therefore be ignored by applying the addition only to
             // the other qubits and shifting c accordingly.
@@ -401,7 +401,7 @@ namespace Microsoft.Quantum.Unstable.Arithmetic {
         Fact(c < 2^ysLen, "Constant `c` must be smaller than 2^Length(ys).");
 
         if c != 0 {
-            // If c has j trailing zeroes than the j least significant
+            // If c has j trailing zeros than the j least significant
             // bits of y won't be affected by the addition and can
             // therefore be ignored by applying the addition only to
             // the other qubits and shifting c accordingly.
@@ -431,7 +431,7 @@ namespace Microsoft.Quantum.Unstable.Arithmetic {
     /// # Reference
     ///     - [arXiv:2012.01624](https://arxiv.org/abs/2012.01624)
     ///       "Quantum block lookahead adders and the wait for magic states"
-    ///       by by Craig Gidney.
+    ///       by Craig Gidney.
     operation IncByLEUsingAddLE(
         forwardAdder : (Qubit[], Qubit[], Qubit[]) => Unit is Adj,
         backwardAdder : (Qubit[], Qubit[], Qubit[]) => Unit is Adj,
