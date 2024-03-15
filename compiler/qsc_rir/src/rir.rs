@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use qsc_data_structures::{index_map::IndexMap, span::Span};
-use std::rc::Rc;
+use qsc_data_structures::index_map::IndexMap;
 
 /// The root of the RIR.
 pub struct Program {
@@ -17,100 +16,71 @@ pub struct CallableId(u32);
 /// A callable.
 #[derive(Clone, Debug)]
 pub struct Callable {
-    /// The callable ID.
-    // CONSIDER: We probably don't need ID.
+    /// The ID of the callable.
     pub id: CallableId,
-    /// The span.
-    // CONSIDER: We probably don't need spans.
-    pub span: Span,
     /// The name of the callable.
-    pub name: Rc<str>,
-    /// The input to the callable.
-    pub input: Vec<(Ty, Ident)>,
-    /// The return type of the callable.
-    pub output: Ty,
+    pub name: String,
+    /// The input type of the callable.
+    pub input_type: Vec<Ty>,
+    /// The output type of the callable.
+    pub output_type: Ty,
     /// The callable body.
     /// N.B. `None` bodys represent an intrinsic.
     pub body: Option<Block>,
 }
 
-// A block.
 #[derive(Clone, Debug)]
-pub struct Block {
-    // CONSIDER: If we don't need spans, this struct might not be needed.
-    pub span: Span,
-    pub stmts: Vec<StmtKind>,
-}
+pub struct Block(pub Vec<Stmt>);
 
-/// A statement.
 #[derive(Clone, Debug)]
-pub struct Stmt {
-    /// The span.
-    pub span: Span,
-    /// The statement kind.
-    pub kind: StmtKind,
-}
-
-// CONSIDER: This can be equivalent to an instruction.
-pub struct Instruction {
-    pub ident: Option<Ident>,
-    pub kind: InstructionKind,
-}
-
-pub enum InstructionKind {}
-
-// A statement kind.
-#[derive(Clone, Debug)]
-pub enum StmtKind {
-    Binding(Ident, Expr),
-    Expr(Expr),
-    Branch(Condition, Block, Block),
+pub enum Stmt {
+    Binding(Variable, Instruction),
+    Instruction(Instruction),
 }
 
 #[derive(Clone, Debug)]
-pub struct Expr {
-    /// The span.
-    pub span: Span,
-    /// The expression type.
+pub enum Instruction {
+    Call(CallableId, Vec<Value>),
+    Branch(Value, Block, Option<Block>),
+    Add(Value, Value),
+    Sub(Value, Value),
+    Mul(Value, Value),
+    Div(Value, Value),
+    LogicalNot(Value),
+    LogicalAnd(Value, Value),
+    LogicalOr(Value, Value),
+    BitwiseNot(Value),
+    BitwiseAnd(Value, Value),
+    BitwiseOr(Value, Value),
+    BitwiseXor(Value, Value),
+}
+
+#[derive(Clone, Debug)]
+pub struct Variable {
+    pub id: u32,
     pub ty: Ty,
-    /// The expression kind.
-    pub kind: ExprKind,
 }
 
 #[derive(Clone, Debug)]
-pub struct Condition {
-    // CONSIDER: This could be just an ident if conditions are simplified to single boolean checks.
-}
-
-#[derive(Clone, Debug)]
-pub enum ExprKind {
-    Literal,
-    Ident(Ident),
-    Call(CallableId, Vec<Expr>),
-}
-
-/// An identifier.
-#[derive(Clone, Debug)]
-pub struct Ident {
-    /// The span.
-    pub span: Span,
-    /// The identifier name.
-    pub name: Rc<str>,
-}
-
-/// A type.
-#[derive(Clone, Copy, Debug)]
 pub enum Ty {
-    /// The boolean type.
-    Bool,
-    /// The floating-point type.
-    Double,
-    /// The integer type.
-    Int,
-    /// The Pauli operator type.
-    Pauli,
-    /// The qubit type.
     Qubit,
-    /// The measurement result type.
     Result,
+    Boolean,
+    Integer,
+    Double,
+}
+
+#[derive(Clone, Debug)]
+pub enum Value {
+    Literal(Literal),
+    Variable(Variable),
+}
+
+#[derive(Clone, Debug)]
+pub enum Literal {
+    Qubit(u32),
+    Result(u32),
+    Bool(bool),
+    Integer(i64),
+    Double(f64),
 }
