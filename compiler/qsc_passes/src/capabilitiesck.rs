@@ -2,7 +2,16 @@
 // Licensed under the MIT License.
 
 #[cfg(test)]
-mod tests;
+mod base;
+
+#[cfg(test)]
+mod adaptive;
+
+#[cfg(test)]
+mod adaptive_plus_integers;
+
+#[cfg(test)]
+pub mod common;
 
 use miette::Diagnostic;
 use qsc_data_structures::span::Span;
