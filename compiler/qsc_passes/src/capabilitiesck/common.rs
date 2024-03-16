@@ -110,8 +110,7 @@ pub const USE_DYNAMIC_RANGE: &str = r#"
     namespace Test {
         operation Foo() : Unit {
             use q = Qubit();
-            let step = M(q) == Zero ? 1 | 2;
-            let range = 1..step..10;
+            let range = 1..(M(q) == Zero ? 1 | 2)..10;
         }
     }"#;
 
@@ -127,8 +126,7 @@ pub const USE_DYNAMICALLY_SIZED_ARRAY: &str = r#"
     namespace Test {
         operation Foo() : Unit {
             use q = Qubit();
-            let s = M(q) == Zero ? 1 | 2;
-            let a = [0, size = s];
+            let a = [0, size = M(q) == Zero ? 1 | 2];
         }
     }"#;
 
@@ -154,6 +152,5 @@ pub const CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT: &str = r#"
     }
     operation Foo() : Unit {
         use q = Qubit();
-        let n = M(q) == Zero ? 10 | 20;
-        let sum = GaussSum(n);
+        let sum = GaussSum(M(q) == Zero ? 10 | 20);
     }"#;

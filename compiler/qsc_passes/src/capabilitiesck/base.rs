@@ -88,7 +88,6 @@ fn use_of_dynamic_pauli_yields_errors() {
     );
 }
 
-#[ignore = "work in progreess"]
 #[test]
 fn use_of_dynamic_range_yields_errors() {
     check_profile(
@@ -98,19 +97,19 @@ fn use_of_dynamic_range_yields_errors() {
                 UseOfDynamicBool(
                     Span {
                         lo: 96,
-                        hi: 135,
+                        hi: 138,
                     },
                 ),
                 UseOfDynamicInt(
                     Span {
                         lo: 96,
-                        hi: 135,
+                        hi: 138,
                     },
                 ),
                 UseOfDynamicRange(
                     Span {
                         lo: 96,
-                        hi: 135,
+                        hi: 138,
                     },
                 ),
             ]
@@ -150,31 +149,19 @@ fn use_of_dynamically_sized_array_yields_errors() {
                 UseOfDynamicBool(
                     Span {
                         lo: 96,
-                        hi: 125,
+                        hi: 137,
                     },
                 ),
                 UseOfDynamicInt(
                     Span {
                         lo: 96,
-                        hi: 125,
-                    },
-                ),
-                UseOfDynamicBool(
-                    Span {
-                        lo: 138,
-                        hi: 160,
-                    },
-                ),
-                UseOfDynamicInt(
-                    Span {
-                        lo: 138,
-                        hi: 160,
+                        hi: 137,
                     },
                 ),
                 UseOfDynamicallySizedArray(
                     Span {
-                        lo: 138,
-                        hi: 160,
+                        lo: 96,
+                        hi: 137,
                     },
                 ),
             ]
@@ -201,31 +188,19 @@ fn call_cyclic_function_with_dynamic_argument_yields_errors() {
                 UseOfDynamicBool(
                     Span {
                         lo: 201,
-                        hi: 232,
+                        hi: 244,
                     },
                 ),
                 UseOfDynamicInt(
                     Span {
                         lo: 201,
-                        hi: 232,
-                    },
-                ),
-                UseOfDynamicBool(
-                    Span {
-                        lo: 241,
-                        hi: 263,
-                    },
-                ),
-                UseOfDynamicInt(
-                    Span {
-                        lo: 241,
-                        hi: 263,
+                        hi: 244,
                     },
                 ),
                 CyclicFunctionUsesDynamicArg(
                     Span {
-                        lo: 241,
-                        hi: 263,
+                        lo: 201,
+                        hi: 244,
                     },
                 ),
             ]

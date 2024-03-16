@@ -3,6 +3,8 @@
 
 #![allow(clippy::needless_raw_string_hashes)]
 
+use crate::capabilitiesck::common::USE_DYNAMIC_RANGE;
+
 use super::common::{
     check, CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
     CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
@@ -50,9 +52,19 @@ fn use_of_dynamic_int_yields_no_errors() {
 }
 
 #[test]
-fn use_of_dynamic_pauli_yields_no_error() {
+fn use_of_dynamic_pauli_yields_no_errors() {
     check_profile(
         USE_DYNAMIC_PAULI,
+        &expect![[r#"
+            []
+        "#]],
+    );
+}
+
+#[test]
+fn use_of_dynamic_range_yields_no_errors() {
+    check_profile(
+        USE_DYNAMIC_RANGE,
         &expect![[r#"
             []
         "#]],
@@ -84,8 +96,8 @@ fn use_of_dynamically_sized_array_yields_error() {
             [
                 UseOfDynamicallySizedArray(
                     Span {
-                        lo: 138,
-                        hi: 160,
+                        lo: 96,
+                        hi: 137,
                     },
                 ),
             ]
@@ -111,8 +123,8 @@ fn call_cyclic_function_with_dynamic_argument_yields_error() {
             [
                 CyclicFunctionUsesDynamicArg(
                     Span {
-                        lo: 241,
-                        hi: 263,
+                        lo: 201,
+                        hi: 244,
                     },
                 ),
             ]

@@ -6,7 +6,7 @@
 use super::common::{
     check, CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
     CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
-    USE_DYNAMIC_BOOLEAN, USE_DYNAMIC_DOUBLE, USE_DYNAMIC_INT, USE_DYNAMIC_PAULI,
+    USE_DYNAMIC_BOOLEAN, USE_DYNAMIC_DOUBLE, USE_DYNAMIC_INT, USE_DYNAMIC_PAULI, USE_DYNAMIC_RANGE,
 };
 use expect_test::{expect, Expect};
 use qsc_frontend::compile::RuntimeCapabilityFlags;
@@ -70,6 +70,29 @@ fn use_of_dynamic_pauli_yields_error() {
 }
 
 #[test]
+fn use_of_dynamic_range_yields_errors() {
+    check_profile(
+        USE_DYNAMIC_RANGE,
+        &expect![[r#"
+            [
+                UseOfDynamicInt(
+                    Span {
+                        lo: 96,
+                        hi: 138,
+                    },
+                ),
+                UseOfDynamicRange(
+                    Span {
+                        lo: 96,
+                        hi: 138,
+                    },
+                ),
+            ]
+        "#]],
+    );
+}
+
+#[test]
 fn use_of_dynamic_double_yields_errors() {
     check_profile(
         USE_DYNAMIC_DOUBLE,
@@ -95,19 +118,13 @@ fn use_of_dynamically_sized_array_yields_error() {
                 UseOfDynamicInt(
                     Span {
                         lo: 96,
-                        hi: 125,
-                    },
-                ),
-                UseOfDynamicInt(
-                    Span {
-                        lo: 138,
-                        hi: 160,
+                        hi: 137,
                     },
                 ),
                 UseOfDynamicallySizedArray(
                     Span {
-                        lo: 138,
-                        hi: 160,
+                        lo: 96,
+                        hi: 137,
                     },
                 ),
             ]
@@ -134,19 +151,13 @@ fn call_cyclic_function_with_dynamic_argument_yields_errors() {
                 UseOfDynamicInt(
                     Span {
                         lo: 201,
-                        hi: 232,
-                    },
-                ),
-                UseOfDynamicInt(
-                    Span {
-                        lo: 241,
-                        hi: 263,
+                        hi: 244,
                     },
                 ),
                 CyclicFunctionUsesDynamicArg(
                     Span {
-                        lo: 241,
-                        hi: 263,
+                        lo: 201,
+                        hi: 244,
                     },
                 ),
             ]
