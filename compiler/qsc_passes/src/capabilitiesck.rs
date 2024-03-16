@@ -25,23 +25,37 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, Diagnostic, Error)]
 pub enum Error {
-    #[error("cannot use a dynamic boolean")]
+    #[error("cannot use a dynamic boolean value")]
     #[diagnostic(help(
-        "using a dynamic boolean, a boolean that depends on a measurement result, is not supported by the target"
+        "using a dynamic boolean value, a boolean value that depends on a measurement result, is not supported by the target"
     ))]
     #[diagnostic(code("Qsc.CapabilitiesCk.UseOfDynamicBool"))]
     UseOfDynamicBool(#[label] Span),
 
-    #[error("cannot use a dynamic integer")]
+    #[error("cannot use a dynamic integer value")]
     #[diagnostic(help(
-        "using a dynamic integer, an integer that depends on a measurement result, is not supported by the target"
+        "using a dynamic integer value, an integer value that depends on a measurement result, is not supported by the target"
     ))]
     #[diagnostic(code("Qsc.CapabilitiesCk.UseOfDynamicInt"))]
     UseOfDynamicInt(#[label] Span),
 
-    #[error("cannot use a dynamic double")]
+    #[error("cannot use a dynamic Pauli value")]
     #[diagnostic(help(
-        "using a dynamic double, a double that depends on a measurement result, is not supported by the target"
+        "using a dynamic Pauli value, a Pauli value that depends on a measurement result, is not supported by the target"
+    ))]
+    #[diagnostic(code("Qsc.CapabilitiesCk.UseOfDynamicPauli"))]
+    UseOfDynamicPauli(#[label] Span),
+
+    #[error("cannot use a dynamic Range value")]
+    #[diagnostic(help(
+        "using a dynamic Range value, a Range value that depends on a measurement result, is not supported by the target"
+    ))]
+    #[diagnostic(code("Qsc.CapabilitiesCk.UseOfDynamicRange"))]
+    UseOfDynamicRange(#[label] Span),
+
+    #[error("cannot use a dynamic double value")]
+    #[diagnostic(help(
+        "using a dynamic double value, a double value that depends on a measurement result, is not supported by the target"
     ))]
     #[diagnostic(code("Qsc.CapabilitiesCk.UseOfDynamicDouble"))]
     UseOfDynamicDouble(#[label] Span),
@@ -52,6 +66,13 @@ pub enum Error {
     ))]
     #[diagnostic(code("Qsc.CapabilitiesCk.UseOfDynamicallySizedArray"))]
     UseOfDynamicallySizedArray(#[label] Span),
+
+    #[error("cannot call a cyclic function with a dynamic value as argument")]
+    #[diagnostic(help(
+        "calling a cyclic function with a dynamic value as argument, a value that depends on a measurement result, is not supported by the target"
+    ))]
+    #[diagnostic(code("Qsc.CapabilitiesCk.CyclicFunctionUsesDynamicArg"))]
+    CyclicFunctionUsesDynamicArg(#[label] Span),
 }
 
 #[must_use]
@@ -95,13 +116,7 @@ impl<'a> Visitor<'a> for Checker<'a> {
     }
 
     fn visit_stmt(&mut self, stmt_id: StmtId) {
-        let compute_kind = self
-            .compute_properties
-            .stmts
-            .get(stmt_id)
-            .expect("statement should exist in package compute properties")
-            .inherent;
-
+        let compute_kind = self.compute_properties.get_stmt(stmt_id).inherent;
         let ComputeKind::Quantum(quantum_properties) = compute_kind else {
             return;
         };
@@ -135,11 +150,20 @@ fn generate_errors_from_runtime_features(
     if runtime_features.contains(RuntimeFeatureFlags::UseOfDynamicInt) {
         errors.push(Error::UseOfDynamicInt(span));
     }
+    if runtime_features.contains(RuntimeFeatureFlags::UseOfDynamicPauli) {
+        errors.push(Error::UseOfDynamicPauli(span));
+    }
+    if runtime_features.contains(RuntimeFeatureFlags::UseOfDynamicRange) {
+        errors.push(Error::UseOfDynamicRange(span));
+    }
     if runtime_features.contains(RuntimeFeatureFlags::UseOfDynamicDouble) {
         errors.push(Error::UseOfDynamicDouble(span));
     }
     if runtime_features.contains(RuntimeFeatureFlags::UseOfDynamicallySizedArray) {
         errors.push(Error::UseOfDynamicallySizedArray(span));
+    }
+    if runtime_features.contains(RuntimeFeatureFlags::CyclicFunctionUsesDynamicArg) {
+        errors.push(Error::CyclicFunctionUsesDynamicArg(span));
     }
     errors
 }

@@ -4,8 +4,9 @@
 #![allow(clippy::needless_raw_string_hashes)]
 
 use super::common::{
-    check, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY, USE_DYNAMIC_BOOLEAN, USE_DYNAMIC_DOUBLE,
-    USE_DYNAMIC_INT,
+    check, CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
+    CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
+    USE_DYNAMIC_BOOLEAN, USE_DYNAMIC_DOUBLE, USE_DYNAMIC_INT, USE_DYNAMIC_PAULI,
 };
 use expect_test::{expect, Expect};
 use qsc_frontend::compile::RuntimeCapabilityFlags;
@@ -42,8 +43,25 @@ fn use_of_dynamic_int_yields_error() {
             [
                 UseOfDynamicInt(
                     Span {
-                        lo: 95,
-                        hi: 124,
+                        lo: 96,
+                        hi: 125,
+                    },
+                ),
+            ]
+        "#]],
+    );
+}
+
+#[test]
+fn use_of_dynamic_pauli_yields_error() {
+    check_profile(
+        USE_DYNAMIC_PAULI,
+        &expect![[r#"
+            [
+                UseOfDynamicPauli(
+                    Span {
+                        lo: 96,
+                        hi: 135,
                     },
                 ),
             ]
@@ -59,8 +77,8 @@ fn use_of_dynamic_double_yields_errors() {
             [
                 UseOfDynamicDouble(
                     Span {
-                        lo: 95,
-                        hi: 128,
+                        lo: 96,
+                        hi: 129,
                     },
                 ),
             ]
@@ -76,20 +94,59 @@ fn use_of_dynamically_sized_array_yields_error() {
             [
                 UseOfDynamicInt(
                     Span {
-                        lo: 95,
-                        hi: 124,
+                        lo: 96,
+                        hi: 125,
                     },
                 ),
                 UseOfDynamicInt(
                     Span {
-                        lo: 137,
-                        hi: 159,
+                        lo: 138,
+                        hi: 160,
                     },
                 ),
                 UseOfDynamicallySizedArray(
                     Span {
-                        lo: 137,
-                        hi: 159,
+                        lo: 138,
+                        hi: 160,
+                    },
+                ),
+            ]
+        "#]],
+    );
+}
+
+#[test]
+fn call_cyclic_function_with_classical_argument_yields_no_errors() {
+    check_profile(
+        CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
+        &expect![[r#"
+            []
+        "#]],
+    );
+}
+
+#[test]
+fn call_cyclic_function_with_dynamic_argument_yields_errors() {
+    check_profile(
+        CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT,
+        &expect![[r#"
+            [
+                UseOfDynamicInt(
+                    Span {
+                        lo: 201,
+                        hi: 232,
+                    },
+                ),
+                UseOfDynamicInt(
+                    Span {
+                        lo: 241,
+                        hi: 263,
+                    },
+                ),
+                CyclicFunctionUsesDynamicArg(
+                    Span {
+                        lo: 241,
+                        hi: 263,
                     },
                 ),
             ]

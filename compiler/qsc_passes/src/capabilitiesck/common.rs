@@ -75,42 +75,85 @@ impl CompilationContext {
 }
 
 pub const MINIMAL: &str = r#"
-    namespace Foo {
-        operation Bar() : Unit {
+    namespace Test {
+        operation Foo() : Unit {
             use q = Qubit();
             let r = M(q);
         }
     }"#;
 
 pub const USE_DYNAMIC_BOOLEAN: &str = r#"
-    namespace Foo {
-        operation Bar() : Unit {
+    namespace Test {
+        operation Foo() : Unit {
             use q = Qubit();
             let b = M(q) == Zero;
         }
     }"#;
 
 pub const USE_DYNAMIC_INT: &str = r#"
-    namespace Foo {
-        operation Bar() : Unit {
+    namespace Test {
+        operation Foo() : Unit {
             use q = Qubit();
             let i = M(q) == Zero ? 0 | 1;
         }
     }"#;
 
+pub const USE_DYNAMIC_PAULI: &str = r#"
+    namespace Test {
+        operation Foo() : Unit {
+            use q = Qubit();
+            let p = M(q) == Zero ? PauliX | PauliY;
+        }
+    }"#;
+
+pub const USE_DYNAMIC_RANGE: &str = r#"
+    namespace Test {
+        operation Foo() : Unit {
+            use q = Qubit();
+            let step = M(q) == Zero ? 1 | 2;
+            let range = 1..step..10;
+        }
+    }"#;
+
 pub const USE_DYNAMIC_DOUBLE: &str = r#"
-    namespace Foo {
-        operation Bar() : Unit {
+    namespace Test {
+        operation Foo() : Unit {
             use q = Qubit();
             let d = M(q) == Zero ? 0.0 | 1.0;
         }
     }"#;
 
 pub const USE_DYNAMICALLY_SIZED_ARRAY: &str = r#"
-    namespace Foo {
-        operation Bar() : Unit {
+    namespace Test {
+        operation Foo() : Unit {
             use q = Qubit();
             let s = M(q) == Zero ? 1 | 2;
             let a = [0, size = s];
         }
+    }"#;
+
+pub const CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT: &str = r#"
+    function GaussSum(n : Int) : Int {
+        if n == 0 {
+            0
+        } else {
+            n + GaussSum(n - 1)
+        }
+    }
+    operation Foo() : Unit {
+        let sum = GaussSum(10);
+    }"#;
+
+pub const CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT: &str = r#"
+    function GaussSum(n : Int) : Int {
+        if n == 0 {
+            0
+        } else {
+            n + GaussSum(n - 1)
+        }
+    }
+    operation Foo() : Unit {
+        use q = Qubit();
+        let n = M(q) == Zero ? 10 | 20;
+        let sum = GaussSum(n);
     }"#;
