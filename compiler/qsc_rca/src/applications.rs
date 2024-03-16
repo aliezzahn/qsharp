@@ -7,7 +7,6 @@ use crate::{
     ApplicationGeneratorSet, ComputeKind, QuantumProperties, RuntimeFeatureFlags, RuntimeKind,
     ValueKind,
 };
-use itertools::Itertools;
 use qsc_fir::{
     fir::{BlockId, ExprId, LocalVarId, StmtId},
     ty::Ty,
@@ -249,7 +248,7 @@ impl GeneratorSetsBuilder {
 
     fn close_inherent(&mut self) -> ApplicationInstanceComputeProperties {
         // The inherent param application is always the first one.
-        let mut variants = self.application_instances[0].drain(..).collect_vec();
+        let mut variants = self.application_instances[0].drain(..).collect::<Vec<_>>();
         let inherent_application_instance = variants
             .pop()
             .expect("inherent application instance could not be popped");
@@ -265,7 +264,7 @@ impl GeneratorSetsBuilder {
         let variants_index = usize::from(param_index) + 1usize;
         let variants = &mut self.application_instances[variants_index]
             .drain(..)
-            .collect_vec();
+            .collect::<Vec<_>>();
 
         // The kind of parameter application we create depends on the number of variants that the parameter has.
         if variants.len() == DYNAMIC_ELEMENTS_PARAM_VARIANTS {

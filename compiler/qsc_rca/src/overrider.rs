@@ -6,7 +6,6 @@ use crate::{
     ArrayParamApplication, ComputeKind, PackageId, ParamApplication, QuantumProperties,
     RuntimeFeatureFlags, RuntimeKind, ValueKind,
 };
-use itertools::Itertools;
 use qsc_fir::{
     fir::{
         Block, BlockId, CallableImpl, Expr, ExprId, Global, Item, ItemKind, LocalItemId, Package,
@@ -370,7 +369,7 @@ impl<'a> Visitor<'a> for Overrider<'a> {
                         _ => None,
                     }
                 })
-                .collect_vec();
+                .collect::<Vec<_>>();
 
             // If a callable has overrides, populate them.
             for (callable_id, callable_name) in callables {

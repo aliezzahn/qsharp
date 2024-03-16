@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use expect_test::Expect;
-use itertools::Itertools;
 use qsc::incremental::Compiler;
 use qsc_data_structures::language_features::LanguageFeatures;
 use qsc_eval::{debug::map_hir_package_to_fir, lower::Lowerer};
@@ -127,16 +126,14 @@ pub fn check_last_statement_compute_properties(
     let last_package_id = package_store_compute_properties
         .iter()
         .map(|(package_id, _)| package_id)
-        .sorted()
-        .last()
+        .max()
         .expect("at least one package should exist");
     let package_compute_properties = package_store_compute_properties.get(last_package_id);
     let last_statement_id = package_compute_properties
         .stmts
         .iter()
         .map(|(stmt_id, _)| stmt_id)
-        .sorted()
-        .last()
+        .max()
         .expect("at least one statement should exist");
     let stmt_compute_properties = package_compute_properties
         .stmts
