@@ -198,7 +198,7 @@ fn call_cyclic_function_with_dynamic_argument_yields_errors() {
                         hi: 244,
                     },
                 ),
-                CyclicFunctionUsesDynamicArg(
+                CallToCyclicFunctionWithDynamicArg(
                     Span {
                         lo: 201,
                         hi: 244,

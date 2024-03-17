@@ -69,10 +69,10 @@ pub enum Error {
 
     #[error("cannot call a cyclic function with a dynamic value as argument")]
     #[diagnostic(help(
-        "calling a cyclic function with a dynamic value as argument, a value that depends on a measurement result, is not supported by the target"
+        "calling a cyclic function with a dynamic value as argument, an argument value that depends on a measurement result, is not supported by the target"
     ))]
-    #[diagnostic(code("Qsc.CapabilitiesCk.CyclicFunctionUsesDynamicArg"))]
-    CyclicFunctionUsesDynamicArg(#[label] Span),
+    #[diagnostic(code("Qsc.CapabilitiesCk.CallToCyclicFunctionWithDynamicArg"))]
+    CallToCyclicFunctionWithDynamicArg(#[label] Span),
 
     #[error("cannot call a cyclic operation")]
     #[diagnostic(help("calling a cyclic operation is not supported by the target"))]
@@ -167,8 +167,11 @@ fn generate_errors_from_runtime_features(
     if runtime_features.contains(RuntimeFeatureFlags::UseOfDynamicallySizedArray) {
         errors.push(Error::UseOfDynamicallySizedArray(span));
     }
-    if runtime_features.contains(RuntimeFeatureFlags::CyclicFunctionUsesDynamicArg) {
-        errors.push(Error::CyclicFunctionUsesDynamicArg(span));
+    if runtime_features.contains(RuntimeFeatureFlags::CallToCyclicFunctionWithDynamicArg) {
+        errors.push(Error::CallToCyclicFunctionWithDynamicArg(span));
+    }
+    if runtime_features.contains(RuntimeFeatureFlags::CallToCyclicOperation) {
+        errors.push(Error::CallToCyclicOperation(span));
     }
     errors
 }
