@@ -6,8 +6,8 @@
 use crate::capabilitiesck::common::USE_DYNAMIC_RANGE;
 
 use super::common::{
-    check, CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
-    CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
+    check, CALL_TO_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
+    CALL_TO_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
     USE_DYNAMIC_BOOLEAN, USE_DYNAMIC_DOUBLE, USE_DYNAMIC_INT, USE_DYNAMIC_PAULI,
 };
 use expect_test::{expect, Expect};
@@ -108,7 +108,7 @@ fn use_of_dynamically_sized_array_yields_error() {
 #[test]
 fn call_cyclic_function_with_classical_argument_yields_no_errors() {
     check_profile(
-        CALL_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
+        CALL_TO_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
         &expect![[r#"
             []
         "#]],
@@ -118,7 +118,7 @@ fn call_cyclic_function_with_classical_argument_yields_no_errors() {
 #[test]
 fn call_cyclic_function_with_dynamic_argument_yields_error() {
     check_profile(
-        CALL_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT,
+        CALL_TO_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT,
         &expect![[r#"
             [
                 CyclicFunctionUsesDynamicArg(

@@ -73,6 +73,11 @@ pub enum Error {
     ))]
     #[diagnostic(code("Qsc.CapabilitiesCk.CyclicFunctionUsesDynamicArg"))]
     CyclicFunctionUsesDynamicArg(#[label] Span),
+
+    #[error("cannot call a cyclic operation")]
+    #[diagnostic(help("calling a cyclic operation is not supported by the target"))]
+    #[diagnostic(code("Qsc.CapabilitiesCk.CallToCyclicOperation"))]
+    CallToCyclicOperation(#[label] Span),
 }
 
 #[must_use]
