@@ -78,6 +78,11 @@ pub enum Error {
     #[diagnostic(code("Qsc.CapabilitiesCk.CallToCyclicFunctionWithDynamicArg"))]
     CallToCyclicFunctionWithDynamicArg(#[label] Span),
 
+    #[error("cannot define a cyclic operation specialization")]
+    #[diagnostic(help("cyclic operation specializations, specializations that contain cycles, are not supported by the target"))]
+    #[diagnostic(code("Qsc.CapabilitiesCk.CyclicOperationSpec"))]
+    CyclicOperationSpec(#[label] Span),
+
     #[error("cannot call a cyclic operation")]
     #[diagnostic(help("calling a cyclic operation is not supported by the target"))]
     #[diagnostic(code("Qsc.CapabilitiesCk.CallToCyclicOperation"))]
@@ -284,6 +289,9 @@ fn generate_errors_from_runtime_features(
     if runtime_features.contains(RuntimeFeatureFlags::CallToCyclicFunctionWithDynamicArg) {
         errors.push(Error::CallToCyclicFunctionWithDynamicArg(span));
     }
+    if runtime_features.contains(RuntimeFeatureFlags::CyclicOperationSpec) {
+        errors.push(Error::CyclicOperationSpec(span));
+    }
     if runtime_features.contains(RuntimeFeatureFlags::CallToCyclicOperation) {
         errors.push(Error::CallToCyclicOperation(span));
     }
@@ -300,6 +308,6 @@ fn get_missing_runtime_features(
 
 fn get_spec_level_runtime_features(runtime_features: RuntimeFeatureFlags) -> RuntimeFeatureFlags {
     const SPEC_LEVEL_RUNTIME_FEATURES: RuntimeFeatureFlags =
-        RuntimeFeatureFlags::CallToCyclicOperation;
+        RuntimeFeatureFlags::CyclicOperationSpec;
     runtime_features & SPEC_LEVEL_RUNTIME_FEATURES
 }
