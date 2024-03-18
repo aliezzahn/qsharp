@@ -5,6 +5,7 @@ use qsc_data_structures::index_map::IndexMap;
 
 /// The root of the RIR.
 pub struct Program {
+    pub blocks: IndexMap<BlockId, Block>,
     pub callables: IndexMap<CallableId, Callable>,
     pub entry: CallableId,
 }
@@ -23,7 +24,7 @@ pub struct Callable {
     /// The input type of the callable.
     pub input_type: Vec<Ty>,
     /// The output type of the callable.
-    pub output_type: Ty,
+    pub output_type: Option<Ty>,
     /// The callable body.
     /// N.B. `None` bodys represent an intrinsic.
     pub body: Option<Block>,
@@ -40,8 +41,10 @@ pub enum Stmt {
 
 #[derive(Clone, Debug)]
 pub enum Instruction {
+    Store(Variable, Value),
     Call(CallableId, Vec<Value>),
-    Branch(Value, Block, Option<Block>),
+    Jump(Block),
+    Branch(Value, Block, Block),
     Add(Value, Value),
     Sub(Value, Value),
     Mul(Value, Value),
@@ -56,8 +59,11 @@ pub enum Instruction {
 }
 
 #[derive(Clone, Debug)]
+pub struct VariableId(u32);
+
+#[derive(Clone, Debug)]
 pub struct Variable {
-    pub id: u32,
+    pub variable_id: VariableId,
     pub ty: Ty,
 }
 
