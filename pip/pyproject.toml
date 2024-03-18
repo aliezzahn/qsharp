@@ -1,12 +1,11 @@
 [project]
-name = "qsharp-lang"
+name = "qsharp"
 version = "0.0.0"
-requires-python = ">= 3.7"
+requires-python = ">= 3.8"
 classifiers = [
     "License :: OSI Approved :: MIT License",
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3.7",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
@@ -20,6 +19,7 @@ classifiers = [
 
 [project.optional-dependencies]
 jupyterlab = ["qsharp-jupyterlab"]
+widgets = ["qsharp-widgets"]
 
 [build-system]
 requires = ["maturin ~= 1.2.0"]

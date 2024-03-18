@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-import { VSDiagnostic } from "../vsdiagnostic.js";
+import { type VSDiagnostic } from "../../lib/web/qsc_wasm.js";
 
 // Each DumpMachine output is represented as an object where each key is a basis
 // state, e.g., "|3>" and the value is the [real, imag] parts of the complex amplitude.
@@ -16,6 +16,7 @@ export type Result =
 interface DumpMsg {
   type: "DumpMachine";
   state: Dump;
+  stateLatex: string;
 }
 
 interface MessageMsg {

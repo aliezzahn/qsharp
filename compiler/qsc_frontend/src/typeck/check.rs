@@ -131,6 +131,7 @@ impl Checker {
                     callable_input: &decl.input,
                     spec_input: None,
                     output: &output,
+                    output_span: decl.output.span,
                     block,
                 },
             ),
@@ -144,6 +145,7 @@ impl Checker {
                                 callable_input: &decl.input,
                                 spec_input: Some(input),
                                 output: &output,
+                                output_span: decl.output.span,
                                 block,
                             },
                         );
@@ -159,8 +161,8 @@ impl Checker {
             match &output {
                 Ty::Tuple(items) if items.is_empty() => {}
                 _ => self.errors.push(Error(ErrorKind::TyMismatch(
-                    Ty::UNIT,
-                    output,
+                    Ty::UNIT.display(),
+                    output.display(),
                     decl.output.span,
                 ))),
             }
@@ -202,7 +204,7 @@ impl Visitor<'_> for ItemCollector<'_> {
     fn visit_item(&mut self, item: &ast::Item) {
         match &*item.kind {
             ast::ItemKind::Callable(decl) => {
-                let Some(&Res::Item(item)) = self.names.get(decl.name.id) else {
+                let Some(&Res::Item(item, _)) = self.names.get(decl.name.id) else {
                     panic!("callable should have item ID");
                 };
 
@@ -217,11 +219,12 @@ impl Visitor<'_> for ItemCollector<'_> {
             }
             ast::ItemKind::Ty(name, def) => {
                 let span = item.span;
-                let Some(&Res::Item(item)) = self.names.get(name.id) else {
+                let Some(&Res::Item(item, _)) = self.names.get(name.id) else {
                     panic!("type should have item ID");
                 };
 
-                let (cons, cons_errors) = convert::ast_ty_def_cons(self.names, item, def);
+                let (cons, cons_errors) =
+                    convert::ast_ty_def_cons(self.names, &name.name, item, def);
                 let (udt_def, def_errors) = convert::ast_ty_def(self.names, def);
                 self.checker.errors.extend(
                     cons_errors
@@ -266,4 +269,7 @@ impl Visitor<'_> for ItemChecker<'_> {
         self.checker.check_callable_decl(self.names, decl);
         visit::walk_callable_decl(self, decl);
     }
+
+    // We do not typecheck attributes, as they are verified during lowering.
+    fn visit_attr(&mut self, _: &ast::Attr) {}
 }

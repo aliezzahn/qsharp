@@ -3,8 +3,9 @@
 
 use crate::compile::{self, compile, core, std};
 use miette::Diagnostic;
+use qsc_data_structures::language_features::LanguageFeatures;
 use qsc_frontend::{
-    compile::{OpenPackageStore, PackageStore, SourceMap, TargetProfile},
+    compile::{OpenPackageStore, PackageStore, RuntimeCapabilityFlags, SourceMap},
     error::WithSource,
     incremental::Increment,
 };
@@ -36,18 +37,26 @@ impl Compiler {
         include_std: bool,
         sources: SourceMap,
         package_type: PackageType,
-        target: TargetProfile,
+        capabilities: RuntimeCapabilityFlags,
+        language_features: LanguageFeatures,
     ) -> Result<Self, Errors> {
         let core = core();
         let mut store = PackageStore::new(core);
         let mut dependencies = Vec::new();
         if include_std {
-            let std = std(&store, target);
+            let std = std(&store, capabilities);
             let id = store.insert(std);
             dependencies.push(id);
         }
 
-        let (unit, errors) = compile(&store, &dependencies, sources, package_type, target);
+        let (unit, errors) = compile(
+            &store,
+            &dependencies,
+            sources,
+            package_type,
+            capabilities,
+            language_features,
+        );
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -55,14 +64,19 @@ impl Compiler {
         let source_package_id = store.insert(unit);
         dependencies.push(source_package_id);
 
-        let frontend = qsc_frontend::incremental::Compiler::new(&store, dependencies, target);
+        let frontend = qsc_frontend::incremental::Compiler::new(
+            &store,
+            dependencies,
+            capabilities,
+            language_features,
+        );
         let store = store.open();
 
         Ok(Self {
             store,
             source_package_id,
             frontend,
-            passes: PassContext::new(target),
+            passes: PassContext::new(capabilities),
         })
     }
 
@@ -77,27 +91,50 @@ impl Compiler {
     /// get information about the newly added items, or do other modifications.
     /// It is then the caller's responsibility to merge
     /// these packages into the current `CompileUnit` using the `update()` method.
-    pub fn compile_fragments(
+    pub fn compile_fragments_fail_fast(
         &mut self,
         source_name: &str,
         source_contents: &str,
     ) -> Result<Increment, Errors> {
+        self.compile_fragments(source_name, source_contents, fail_on_error)
+    }
+
+    /// Compiles Q# fragments. See [`compile_fragments_fail_fast`] for more details.
+    ///
+    /// This method calls an accumulator function with any errors returned
+    /// from each of the stages (parsing, lowering).
+    /// If the accumulator succeeds, compilation continues.
+    /// If the accumulator returns an error, compilation stops and the
+    /// error is returned to the caller.
+    pub fn compile_fragments<F>(
+        &mut self,
+        source_name: &str,
+        source_contents: &str,
+        mut accumulate_errors: F,
+    ) -> Result<Increment, Errors>
+    where
+        F: FnMut(Errors) -> Result<(), Errors>,
+    {
         let (core, unit) = self.store.get_open_mut();
 
-        let mut increment = self
-            .frontend
-            .compile_fragments(unit, source_name, source_contents)
-            .map_err(into_errors)?;
+        let mut errors = false;
+        let mut increment =
+            self.frontend
+                .compile_fragments(unit, source_name, source_contents, |e| {
+                    errors = errors || !e.is_empty();
+                    accumulate_errors(into_errors(e))
+                })?;
 
-        let pass_errors = self.passes.run_default_passes(
-            &mut increment.hir,
-            &mut unit.assigner,
-            core,
-            PackageType::Lib,
-        );
+        // Even if we don't fail fast, skip passes if there were compilation errors.
+        if !errors {
+            let pass_errors = self.passes.run_default_passes(
+                &mut increment.hir,
+                &mut unit.assigner,
+                core,
+                PackageType::Lib,
+            );
 
-        if !pass_errors.is_empty() {
-            return Err(into_errors_with_source(pass_errors, &unit.sources));
+            accumulate_errors(into_errors_with_source(pass_errors, &unit.sources))?;
         }
 
         Ok(increment)
@@ -112,12 +149,12 @@ impl Compiler {
     /// get information about the newly added items, or do other modifications.
     /// It is then the caller's responsibility to merge
     /// these packages into the current `CompileUnit` using the `update()` method.
-    pub fn compile_expr(&mut self, expr: &str) -> Result<Increment, Errors> {
+    pub fn compile_entry_expr(&mut self, expr: &str) -> Result<Increment, Errors> {
         let (core, unit) = self.store.get_open_mut();
 
         let mut increment = self
             .frontend
-            .compile_expr(unit, "<entry>", expr)
+            .compile_entry_expr(unit, expr)
             .map_err(into_errors)?;
 
         let pass_errors = self.passes.run_default_passes(
@@ -136,6 +173,7 @@ impl Compiler {
 
     /// Updates the current compilation with the AST and HIR packages,
     /// and any associated context, returned from a previous incremental compilation.
+    /// Entry expressions are ignored.
     pub fn update(&mut self, new: Increment) {
         let (_, unit) = self.store.get_open_mut();
 
@@ -188,4 +226,11 @@ where
         .into_iter()
         .map(qsc_frontend::error::WithSource::into_with_source)
         .collect()
+}
+
+fn fail_on_error(errors: Errors) -> Result<(), Errors> {
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(())
 }

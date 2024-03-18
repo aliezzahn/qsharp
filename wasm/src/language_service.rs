@@ -1,54 +1,105 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::{diagnostic::VSDiagnostic, serializable_type};
-use qsc::{self, compile};
+use crate::{
+    diagnostic::VSDiagnostic,
+    into_async_rust_fn_with,
+    line_column::{ILocation, IPosition, Location, Position, Range},
+    project_system::{
+        get_manifest_transformer, list_directory_transformer, read_file_transformer,
+        GetManifestCallback, ListDirectoryCallback, ReadFileCallback,
+    },
+    serializable_type,
+};
+use qsc::{self, line_column::Encoding, target::Profile, LanguageFeatures, PackageType};
+use qsls::protocol::DiagnosticUpdate;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::future_to_promise;
 
 #[wasm_bindgen]
-pub struct LanguageService(qsls::LanguageService<'static>);
+pub struct LanguageService(qsls::LanguageService);
 
 #[wasm_bindgen]
 impl LanguageService {
     #[wasm_bindgen(constructor)]
-    pub fn new(diagnostics_callback: &js_sys::Function) -> Self {
-        let diagnostics_callback = diagnostics_callback.clone();
-        let inner = qsls::LanguageService::new(
-            move |uri: &str, version: u32, errors: &[compile::Error]| {
-                let diags = errors
-                    .iter()
-                    .map(|err| VSDiagnostic::from_compile_error(uri, err))
-                    .collect::<Vec<_>>();
-                let _ = diagnostics_callback
-                    .call3(
-                        &JsValue::NULL,
-                        &uri.into(),
-                        &version.into(),
-                        &serde_wasm_bindgen::to_value(&diags)
-                            .expect("conversion to VSDiagnostic should succeed"),
-                    )
-                    .expect("callback should succeed");
-            },
+    #[allow(clippy::new_without_default)] // wasm-bindgen requires constructor to be explicitly defined
+    pub fn new() -> Self {
+        LanguageService(qsls::LanguageService::new(Encoding::Utf16))
+    }
+
+    pub fn start_background_work(
+        &mut self,
+        diagnostics_callback: DiagnosticsCallback,
+        read_file: ReadFileCallback,
+        list_directory: ListDirectoryCallback,
+        get_manifest: GetManifestCallback,
+    ) -> js_sys::Promise {
+        let read_file = read_file.into();
+        let read_file = into_async_rust_fn_with!(read_file, read_file_transformer);
+
+        let list_directory = list_directory.into();
+        let list_directory = into_async_rust_fn_with!(list_directory, list_directory_transformer);
+
+        let get_manifest: JsValue = get_manifest.into();
+        let get_manifest = into_async_rust_fn_with!(get_manifest, get_manifest_transformer);
+
+        let diagnostics_callback =
+            crate::project_system::to_js_function(diagnostics_callback.obj, "diagnostics_callback");
+
+        let diagnostics_callback = diagnostics_callback
+            .dyn_ref::<js_sys::Function>()
+            .expect("expected a valid JS function")
+            .clone();
+
+        let diagnostics_callback = move |update: DiagnosticUpdate| {
+            let diags = update
+                .errors
+                .iter()
+                .map(|err| VSDiagnostic::from_compile_error(&update.uri, err))
+                .collect::<Vec<_>>();
+            let _ = diagnostics_callback
+                .call3(
+                    &JsValue::NULL,
+                    &update.uri.into(),
+                    &update.version.into(),
+                    &serde_wasm_bindgen::to_value(&diags)
+                        .expect("conversion to VSDiagnostic should succeed"),
+                )
+                .expect("callback should succeed");
+        };
+        let mut worker = self.0.create_update_worker(
+            diagnostics_callback,
+            read_file,
+            list_directory,
+            get_manifest,
         );
-        LanguageService(inner)
+
+        future_to_promise(async move {
+            worker.run().await;
+            Ok(JsValue::undefined())
+        })
+    }
+
+    pub fn stop_background_work(&mut self) {
+        self.0.stop_updates();
     }
 
     pub fn update_configuration(&mut self, config: IWorkspaceConfiguration) {
         let config: WorkspaceConfiguration = config.into();
         self.0
-            .update_configuration(&qsls::protocol::WorkspaceConfigurationUpdate {
-                target_profile: config.targetProfile.map(|s| match s.as_str() {
-                    "base" => qsc::TargetProfile::Base,
-                    "full" => qsc::TargetProfile::Full,
-                    _ => panic!("invalid target profile"),
-                }),
+            .update_configuration(qsls::protocol::WorkspaceConfigurationUpdate {
+                target_profile: config
+                    .targetProfile
+                    .map(|s| Profile::from_str(&s).expect("invalid target profile")),
                 package_type: config.packageType.map(|s| match s.as_str() {
-                    "lib" => qsc::PackageType::Lib,
-                    "exe" => qsc::PackageType::Exe,
+                    "lib" => PackageType::Lib,
+                    "exe" => PackageType::Exe,
                     _ => panic!("invalid package type"),
                 }),
-            })
+            });
     }
 
     pub fn update_document(&mut self, uri: &str, version: u32, text: &str) {
@@ -59,8 +110,37 @@ impl LanguageService {
         self.0.close_document(uri);
     }
 
-    pub fn get_completions(&self, uri: &str, offset: u32) -> ICompletionList {
-        let completion_list = self.0.get_completions(uri, offset);
+    pub fn update_notebook_document(
+        &mut self,
+        notebook_uri: &str,
+        notebook_metadata: INotebookMetadata,
+        cells: Vec<ICell>,
+    ) {
+        let cells: Vec<Cell> = cells.into_iter().map(std::convert::Into::into).collect();
+        let notebook_metadata: NotebookMetadata = notebook_metadata.into();
+        self.0.update_notebook_document(
+            notebook_uri,
+            qsls::protocol::NotebookMetadata {
+                target_profile: notebook_metadata
+                    .targetProfile
+                    .map(|s| Profile::from_str(&s).expect("invalid target profile")),
+                language_features: LanguageFeatures::from_iter(
+                    notebook_metadata.languageFeatures.unwrap_or_default(),
+                ),
+            },
+            cells
+                .iter()
+                .map(|s| (s.uri.as_ref(), s.version, s.code.as_ref())),
+        );
+    }
+
+    pub fn close_notebook_document(&mut self, notebook_uri: &str) {
+        self.0.close_notebook_document(notebook_uri);
+    }
+
+    pub fn get_completions(&self, uri: &str, position: IPosition) -> ICompletionList {
+        let position: Position = position.into();
+        let completion_list = self.0.get_completions(uri, position.into());
         CompletionList {
             items: completion_list
                 .items
@@ -73,6 +153,8 @@ impl LanguageService {
                         qsls::protocol::CompletionItemKind::Keyword => "keyword",
                         qsls::protocol::CompletionItemKind::Module => "module",
                         qsls::protocol::CompletionItemKind::Property => "property",
+                        qsls::protocol::CompletionItemKind::Variable => "variable",
+                        qsls::protocol::CompletionItemKind::TypeParameter => "typeParameter",
                     })
                     .to_string(),
                     sortText: i.sort_text,
@@ -81,10 +163,7 @@ impl LanguageService {
                         edits
                             .into_iter()
                             .map(|(span, text)| TextEdit {
-                                range: Span {
-                                    start: span.start,
-                                    end: span.end,
-                                },
+                                range: span.into(),
                                 newText: text,
                             })
                             .collect()
@@ -95,33 +174,43 @@ impl LanguageService {
         .into()
     }
 
-    pub fn get_definition(&self, uri: &str, offset: u32) -> Option<IDefinition> {
-        let definition = self.0.get_definition(uri, offset);
-        definition.map(|definition| {
-            Definition {
-                source: definition.source,
-                offset: definition.offset,
-            }
-            .into()
-        })
+    pub fn get_definition(&self, uri: &str, position: IPosition) -> Option<ILocation> {
+        let position: Position = position.into();
+        let definition = self.0.get_definition(uri, position.into());
+        definition.map(|definition| Location::from(definition).into())
     }
 
-    pub fn get_hover(&self, uri: &str, offset: u32) -> Option<IHover> {
-        let hover = self.0.get_hover(uri, offset);
+    pub fn get_references(
+        &self,
+        uri: &str,
+        position: IPosition,
+        include_declaration: bool,
+    ) -> Vec<ILocation> {
+        let position: Position = position.into();
+        let locations = self
+            .0
+            .get_references(uri, position.into(), include_declaration);
+        locations
+            .into_iter()
+            .map(|loc| Location::from(loc).into())
+            .collect()
+    }
+
+    pub fn get_hover(&self, uri: &str, position: IPosition) -> Option<IHover> {
+        let position: Position = position.into();
+        let hover = self.0.get_hover(uri, position.into());
         hover.map(|hover| {
             Hover {
                 contents: hover.contents,
-                span: Span {
-                    start: hover.span.start,
-                    end: hover.span.end,
-                },
+                span: hover.span.into(),
             }
             .into()
         })
     }
 
-    pub fn get_signature_help(&self, uri: &str, offset: u32) -> Option<ISignatureHelp> {
-        let sig_help = self.0.get_signature_help(uri, offset);
+    pub fn get_signature_help(&self, uri: &str, position: IPosition) -> Option<ISignatureHelp> {
+        let position: Position = position.into();
+        let sig_help = self.0.get_signature_help(uri, position.into());
         sig_help.map(|sig_help| {
             SignatureHelp {
                 signatures: sig_help
@@ -129,16 +218,13 @@ impl LanguageService {
                     .into_iter()
                     .map(|sig| SignatureInformation {
                         label: sig.label,
-                        documentation: sig.documentation,
+                        documentation: sig.documentation.unwrap_or_default(),
                         parameters: sig
                             .parameters
                             .into_iter()
                             .map(|param| ParameterInformation {
-                                label: Span {
-                                    start: param.label.start,
-                                    end: param.label.end,
-                                },
-                                documentation: param.documentation,
+                                label: param.label,
+                                documentation: param.documentation.unwrap_or_default(),
                             })
                             .collect(),
                     })
@@ -150,38 +236,60 @@ impl LanguageService {
         })
     }
 
-    pub fn get_rename(&self, uri: &str, offset: u32, new_name: &str) -> IWorkspaceEdit {
-        let locations = self.0.get_rename(uri, offset);
+    pub fn get_rename(&self, uri: &str, position: IPosition, new_name: &str) -> IWorkspaceEdit {
+        let position: Position = position.into();
+        let locations = self.0.get_rename(uri, position.into());
 
-        let renames = locations
-            .into_iter()
-            .map(|s| TextEdit {
-                range: Span {
-                    start: s.start,
-                    end: s.end,
-                },
-                newText: new_name.to_string(),
-            })
-            .collect::<Vec<_>>();
+        let mut renames: FxHashMap<String, Vec<TextEdit>> = FxHashMap::default();
+        for l in locations {
+            renames
+                .entry(l.source.to_string())
+                .or_default()
+                .push(TextEdit {
+                    range: l.range.into(),
+                    newText: new_name.to_string(),
+                });
+        }
 
         let workspace_edit = WorkspaceEdit {
-            changes: vec![(uri.to_string(), renames)],
+            changes: renames.into_iter().collect(),
         };
+
         workspace_edit.into()
     }
 
-    pub fn prepare_rename(&self, uri: &str, offset: u32) -> Option<ITextEdit> {
-        let result = self.0.prepare_rename(uri, offset);
+    pub fn prepare_rename(&self, uri: &str, position: IPosition) -> Option<ITextEdit> {
+        let position: Position = position.into();
+        let result = self.0.prepare_rename(uri, position.into());
         result.map(|r| {
             TextEdit {
-                range: Span {
-                    start: r.0.start,
-                    end: r.0.end,
-                },
+                range: r.0.into(),
                 newText: r.1,
             }
             .into()
         })
+    }
+
+    pub fn get_code_lenses(&self, uri: &str) -> Vec<ICodeLens> {
+        let code_lenses = self.0.get_code_lenses(uri);
+        code_lenses
+            .into_iter()
+            .map(|lens| {
+                let range = lens.range.into();
+                let (command, args) = match lens.command {
+                    qsls::protocol::CodeLensCommand::Histogram => ("histogram", None),
+                    qsls::protocol::CodeLensCommand::Debug => ("debug", None),
+                    qsls::protocol::CodeLensCommand::Run => ("run", None),
+                    qsls::protocol::CodeLensCommand::Estimate => ("estimate", None),
+                };
+                CodeLens {
+                    range,
+                    command: command.to_string(),
+                    args,
+                }
+                .into()
+            })
+            .collect()
     }
 }
 
@@ -192,7 +300,7 @@ serializable_type! {
         pub packageType: Option<String>,
     },
     r#"export interface IWorkspaceConfiguration {
-        targetProfile?: "full" | "base";
+        targetProfile?: TargetProfile;
         packageType?: "exe" | "lib";
     }"#,
     IWorkspaceConfiguration
@@ -220,7 +328,7 @@ serializable_type! {
     },
     r#"export interface ICompletionItem {
         label: string;
-        kind: "function" | "interface" | "keyword" | "module" | "property";
+        kind: "function" | "interface" | "keyword" | "module" | "property" | "variable" | "typeParameter";
         sortText?: string;
         detail?: string;
         additionalTextEdits?: ITextEdit[];
@@ -230,11 +338,11 @@ serializable_type! {
 serializable_type! {
     TextEdit,
     {
-        pub range: Span,
+        pub range: Range,
         pub newText: String,
     },
     r#"export interface ITextEdit {
-        range: ISpan;
+        range: IRange;
         newText: string;
     }"#,
     ITextEdit
@@ -244,26 +352,13 @@ serializable_type! {
     Hover,
     {
         pub contents: String,
-        pub span: Span,
+        pub span: Range,
     },
     r#"export interface IHover {
         contents: string;
-        span: ISpan
+        span: IRange
     }"#,
     IHover
-}
-
-serializable_type! {
-    Definition,
-    {
-        pub source: String,
-        pub offset: u32,
-    },
-    r#"export interface IDefinition {
-        source: string;
-        offset: number;
-    }"#,
-    IDefinition
 }
 
 serializable_type! {
@@ -285,12 +380,12 @@ serializable_type! {
     SignatureInformation,
     {
         label: String,
-        documentation: Option<String>,
+        documentation: String,
         parameters: Vec<ParameterInformation>,
     },
     r#"export interface ISignatureInformation {
         label: string;
-        documentation?: string;
+        documentation: string;
         parameters: IParameterInformation[];
     }"#
 }
@@ -298,13 +393,29 @@ serializable_type! {
 serializable_type! {
     ParameterInformation,
     {
-        label: Span,
-        documentation: Option<String>,
+        label: (u32,u32),
+        documentation: String,
     },
     r#"export interface IParameterInformation {
-        label: ISpan;
-        documentation?: string;
+        label: [number, number];
+        documentation: string;
     }"#
+}
+
+serializable_type! {
+    CodeLens,
+    {
+        range: Range,
+        command: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        args: Option<(String, String, String)>,
+    },
+    r#"export interface ICodeLens {
+        range: IRange;
+        command: "histogram" | "estimate" | "debug" | "run";
+        args?: [string, string, string];
+    }"#,
+    ICodeLens
 }
 
 serializable_type! {
@@ -319,13 +430,37 @@ serializable_type! {
 }
 
 serializable_type! {
-    Span,
+    Cell,
     {
-        pub start: u32,
-        pub end: u32,
+        pub uri: String,
+        pub version: u32,
+        pub code: String
     },
-    r#"export interface ISpan {
-        start: number;
-        end: number;
-    }"#
+    r#"export interface ICell {
+        uri: string;
+        version: number;
+        code: string;
+    }"#,
+    ICell
+}
+
+serializable_type! {
+    NotebookMetadata,
+    {
+        pub targetProfile: Option<String>,
+        pub languageFeatures: Option<Vec<String>>
+    },
+    r#"export interface INotebookMetadata {
+        targetProfile?: "unrestricted" | "base";
+        languageFeatures?: "v2-preview-syntax"[];
+    }"#,
+    INotebookMetadata
+}
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(
+        typescript_type = "(uri: string, version: number | undefined, diagnostics: VSDiagnostic[]) => void"
+    )]
+    pub type DiagnosticsCallback;
 }

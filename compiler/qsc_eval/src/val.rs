@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use num_bigint::BigInt;
-use qsc_fir::fir::{LocalItemId, PackageId, Pauli};
+use qsc_data_structures::{display::join, functors::FunctorApp};
+use qsc_fir::fir::{Pauli, StoreItemId};
 use std::{
     fmt::{self, Display, Formatter},
-    iter,
     rc::Rc,
 };
 
@@ -13,12 +13,12 @@ pub(super) const DEFAULT_RANGE_STEP: i64 = 1;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
-    Array(Rc<[Value]>),
+    Array(Rc<Vec<Value>>),
     BigInt(BigInt),
     Bool(bool),
-    Closure(Rc<[Value]>, GlobalId, FunctorApp),
+    Closure(Rc<[Value]>, StoreItemId, FunctorApp),
     Double(f64),
-    Global(GlobalId, FunctorApp),
+    Global(StoreItemId, FunctorApp),
     Int(i64),
     Pauli(Pauli),
     Qubit(Qubit),
@@ -71,38 +71,7 @@ impl From<usize> for Result {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GlobalId {
-    pub package: PackageId,
-    pub item: LocalItemId,
-}
-
-impl Display for GlobalId {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "<item {} in package {}>", self.item, self.package)
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Qubit(pub usize);
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct FunctorApp {
-    /// An invocation is either adjoint or not, with each successive use of `Adjoint` functor switching
-    /// between the two, so a bool is sufficient to track.
-    pub adjoint: bool,
-
-    /// An invocation can have multiple `Controlled` functors with each one adding another layer of updates
-    /// to the argument tuple, so the functor application must be tracked with a count.
-    pub controlled: u8,
-}
-
-impl Display for FunctorApp {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let controlleds = iter::repeat("Controlled").take(self.controlled.into());
-        let adjoint = iter::once("Adjoint").filter(|_| self.adjoint);
-        join(f, controlleds.chain(adjoint), " ")
-    }
-}
 
 impl Display for Value {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -164,24 +133,57 @@ impl Display for Value {
     }
 }
 
+thread_local! {
+    static UNIT: Rc<[Value; 0]> = Rc::new([]);
+}
+
 impl Value {
     pub const RESULT_ZERO: Self = Self::Result(Result::Val(false));
     pub const RESULT_ONE: Self = Self::Result(Result::Val(true));
 
     #[must_use]
     pub fn unit() -> Self {
-        Self::Tuple([].as_slice().into())
+        UNIT.with(|unit| Self::Tuple(unit.clone()))
     }
 
     /// Convert the [Value] into an array of [Value]
     /// # Panics
     /// This will panic if the [Value] is not a [`Value::Array`].
     #[must_use]
-    pub fn unwrap_array(self) -> Rc<[Self]> {
+    pub fn unwrap_array(self) -> Rc<Vec<Self>> {
         let Value::Array(v) = self else {
             panic!("value should be Array, got {}", self.type_name());
         };
         v
+    }
+
+    /// Updates a value in an array in-place.
+    /// # Panics
+    /// This will panic if the [Value] is not a [`Value::Array`].
+    pub fn update_array(&mut self, index: usize, value: Self) -> core::result::Result<(), usize> {
+        let Value::Array(arr) = self else {
+            panic!("value should be Array, got {}", self.type_name());
+        };
+        let arr = Rc::get_mut(arr).expect("array should be uniquely referenced");
+        match arr.get_mut(index) {
+            Some(v) => {
+                *v = value;
+                Ok(())
+            }
+            None => Err(index),
+        }
+    }
+
+    /// Appends a value to an array in-place.
+    /// # Panics
+    /// This will panic if the [Value] is not a [`Value::Array`].
+    pub fn append_array(&mut self, value: Self) {
+        let Value::Array(arr) = self else {
+            panic!("value should be Array, got {}", self.type_name());
+        };
+        let arr = Rc::get_mut(arr).expect("array should be uniquely referenced");
+        let append_arr = value.unwrap_array();
+        arr.extend_from_slice(&append_arr);
     }
 
     /// Convert the [Value] into a `BigInt`
@@ -221,7 +223,7 @@ impl Value {
     /// # Panics
     /// This will panic if the [Value] is not a [`Value::Global`].
     #[must_use]
-    pub fn unwrap_global(self) -> (GlobalId, FunctorApp) {
+    pub fn unwrap_global(self) -> (StoreItemId, FunctorApp) {
         let Value::Global(id, functor) = self else {
             panic!("value should be Global, got {}", self.type_name());
         };
@@ -323,15 +325,4 @@ impl Value {
             Value::Tuple(_) => "Tuple",
         }
     }
-}
-
-fn join(f: &mut Formatter, mut vals: impl Iterator<Item = impl Display>, sep: &str) -> fmt::Result {
-    if let Some(v) = vals.next() {
-        v.fmt(f)?;
-    }
-    for v in vals {
-        write!(f, "{sep}")?;
-        v.fmt(f)?;
-    }
-    Ok(())
 }

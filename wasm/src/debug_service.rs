@@ -1,46 +1,49 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use qsc::fir::StmtId;
-use qsc::interpret::stateful::Interpreter;
-use qsc::interpret::{stateful, StepAction, StepResult};
-use qsc::{fmt_complex, PackageType, SourceMap, TargetProfile};
+use std::str::FromStr;
 
-use crate::{serializable_type, CallbackReceiver};
+use qsc::fir::StmtId;
+use qsc::interpret::{Debugger, Error, StepAction, StepResult};
+use qsc::line_column::Encoding;
+use qsc::{fmt_complex, target::Profile, LanguageFeatures};
+
+use crate::line_column::{Location, Range};
+use crate::{get_source_map, serializable_type, CallbackReceiver};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
+#[derive(Default)]
 pub struct DebugService {
-    interpreter: Interpreter,
+    debugger: Option<Debugger>,
 }
 
 #[wasm_bindgen]
 impl DebugService {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
-        Self {
-            interpreter: Interpreter::new(
-                false,
-                SourceMap::default(),
-                PackageType::Lib,
-                TargetProfile::Full,
-            )
-            .expect("Couldn't create interpreter"),
-        }
+        Self::default()
     }
 
-    pub fn load_source(&mut self, path: String, source: String, entry: Option<String>) -> String {
-        let source_map = SourceMap::new(
-            [(path.into(), source.into())],
-            entry.as_deref().map(|value| value.into()),
-        );
-        match Interpreter::new(true, source_map, qsc::PackageType::Exe, TargetProfile::Full) {
-            Ok(interpreter) => {
-                self.interpreter = interpreter;
-                match self.interpreter.set_entry() {
-                    Ok(()) => "".to_string(),
+    #[allow(clippy::needless_pass_by_value)] // needed for wasm_bindgen
+    pub fn load_source(
+        &mut self,
+        sources: Vec<js_sys::Array>,
+        target_profile: &str,
+        entry: Option<String>,
+        language_features: Vec<String>,
+    ) -> String {
+        let source_map = get_source_map(sources, &entry);
+        let target = Profile::from_str(target_profile)
+            .unwrap_or_else(|()| panic!("Invalid target : {target_profile}"));
+        let features = LanguageFeatures::from_iter(language_features);
+        match Debugger::new(source_map, target.into(), Encoding::Utf16, features) {
+            Ok(debugger) => {
+                self.debugger = Some(debugger);
+                match self.debugger_mut().set_entry() {
+                    Ok(()) => String::new(),
                     Err(e) => render_errors(e),
                 }
             }
@@ -49,7 +52,7 @@ impl DebugService {
     }
 
     pub fn capture_quantum_state(&mut self) -> IQuantumStateList {
-        let state = self.interpreter.capture_quantum_state();
+        let state = self.debugger_mut().capture_quantum_state();
         let entries = state
             .0
             .iter()
@@ -63,16 +66,14 @@ impl DebugService {
     }
 
     pub fn get_stack_frames(&self) -> IStackFrameList {
-        let frames = self.interpreter.get_stack_frames();
+        let frames = self.debugger().get_stack_frames();
 
         StackFrameList {
             frames: frames
-                .iter()
+                .into_iter()
                 .map(|s| StackFrame {
                     name: format!("{} {}", s.name, s.functor),
-                    path: s.path.clone(),
-                    lo: s.lo,
-                    hi: s.hi,
+                    location: s.location.into(),
                 })
                 .collect(),
         }
@@ -122,14 +123,11 @@ impl DebugService {
         }
         let bps: Vec<_> = ids.iter().map(|f| StmtId::from(*f)).collect();
 
-        match self.run_internal(
-            |msg: &str| {
-                // See example at https://rustwasm.github.io/wasm-bindgen/reference/receiving-js-closures-in-rust.html
-                let _ = event_cb.call1(&JsValue::null(), &JsValue::from(msg));
-            },
-            &bps,
-            step,
-        ) {
+        let event_cb = |msg: &str| {
+            // See example at https://rustwasm.github.io/wasm-bindgen/reference/receiving-js-closures-in-rust.html
+            let _ = event_cb.call1(&JsValue::null(), &JsValue::from(msg));
+        };
+        match self.run_internal(event_cb, &bps, step) {
             Ok(value) => Ok(StructStepResult::from(value).into()),
             Err(e) => Err(JsError::from(&e[0]).into()),
         }
@@ -140,12 +138,12 @@ impl DebugService {
         event_cb: F,
         bps: &[StmtId],
         step: StepAction,
-    ) -> Result<StepResult, Vec<stateful::Error>>
+    ) -> Result<StepResult, Vec<Error>>
     where
         F: Fn(&str),
     {
         let mut out = CallbackReceiver { event_cb };
-        let result = self.interpreter.eval_step(&mut out, bps, step);
+        let result = self.debugger_mut().eval_step(&mut out, bps, step);
         let mut success = true;
 
         let msg: Option<serde_json::Value> = match &result {
@@ -173,20 +171,19 @@ impl DebugService {
 
         match result {
             Ok(value) => Ok(value),
-            Err(errors) => Err(Vec::from_iter(errors.iter().cloned())),
+            Err(errors) => Err(errors.clone()),
         }
     }
 
     pub fn get_breakpoints(&self, path: &str) -> IBreakpointSpanList {
-        let bps = self.interpreter.get_breakpoints(path);
+        let bps = self.debugger().get_breakpoints(path);
 
         BreakpointSpanList {
             spans: bps
                 .iter()
                 .map(|s| BreakpointSpan {
                     id: s.id,
-                    lo: s.lo,
-                    hi: s.hi,
+                    range: s.range.into(),
                 })
                 .collect(),
         }
@@ -194,7 +191,7 @@ impl DebugService {
     }
 
     pub fn get_locals(&self) -> IVariableList {
-        let locals = self.interpreter.get_locals();
+        let locals = self.debugger().get_locals();
         let variables: Vec<_> = locals
             .into_iter()
             .map(|local| Variable {
@@ -205,21 +202,31 @@ impl DebugService {
             .collect();
         VariableList { variables }.into()
     }
-}
 
-impl Default for DebugService {
-    fn default() -> Self {
-        Self::new()
+    fn debugger(&self) -> &Debugger {
+        self.debugger
+            .as_ref()
+            .expect("debugger should be initialized")
+    }
+
+    fn debugger_mut(&mut self) -> &mut Debugger {
+        self.debugger
+            .as_mut()
+            .expect("debugger should be initialized")
     }
 }
 
-fn render_errors(errors: Vec<qsc::interpret::stateful::Error>) -> String {
+fn render_errors(errors: Vec<Error>) -> String {
     let mut msg = String::new();
     for error in errors {
-        let error_string = format!("{:?}\n", miette::Report::new(error));
+        let error_string = render_error(error);
         msg.push_str(&error_string);
     }
     msg
+}
+
+fn render_error(error: Error) -> String {
+    format!("{:?}\n", miette::Report::new(error))
 }
 
 impl From<StepResult> for StructStepResult {
@@ -294,13 +301,11 @@ serializable_type! {
     BreakpointSpan,
     {
         pub id: u32,
-        pub lo: u32,
-        pub hi: u32,
+        pub range: Range
     },
     r#"export interface IBreakpointSpan {
         id: number;
-        lo: number;
-        hi: number;
+        range: IRange;
     }"#
 }
 
@@ -320,15 +325,11 @@ serializable_type! {
     StackFrame,
     {
         pub name: String,
-        pub path: String,
-        pub lo: u32,
-        pub hi: u32,
+        pub location: Location
     },
     r#"export interface IStackFrame {
         name: string;
-        path: string;
-        lo: number;
-        hi: number;
+        location: ILocation
     }"#
 }
 

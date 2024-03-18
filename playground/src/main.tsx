@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// Use esbuild to bundle and copy the CSS files to the output directory.
+import "modern-normalize/modern-normalize.css";
+
 import { render } from "preact";
 import {
   CompilerState,
@@ -22,7 +25,11 @@ import { Editor } from "./editor.js";
 import { OutputTabs } from "./tabs.js";
 import { useState } from "preact/hooks";
 import { Kata as Katas } from "./kata.js";
-import { compressedBase64ToCode } from "./utils.js";
+import {
+  compressedBase64ToCode,
+  lsRangeToMonacoRange,
+  monacoPositionToLsPosition,
+} from "./utils.js";
 
 export type ActiveTab = "results-tab" | "hir-tab" | "logs-tab";
 
@@ -33,7 +40,11 @@ const compilerWorkerPath = basePath + "libs/compiler-worker.js";
 const languageServiceWorkerPath = basePath + "libs/language-service-worker.js";
 
 declare global {
-  const MathJax: { typeset: () => void };
+  const MathJax: {
+    typeset: () => void;
+    typesetPromise: (nodes: HTMLElement[]) => Promise<any>;
+    typesetClear: (nodes: HTMLElement[]) => void;
+  };
 }
 
 function telemetryHandler({ id, data }: { id: string; data?: any }) {
@@ -188,6 +199,12 @@ async function loaded() {
 function registerMonacoLanguageServiceProviders(
   languageService: ILanguageService,
 ) {
+  monaco.languages.setLanguageConfiguration("qsharp", {
+    // This pattern is duplicated in /vscode/language-configuration.json . Please keep them in sync.
+    wordPattern: new RegExp(
+      "(-?\\d*\\.\\d\\w*)|(@\\w*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\-\\=\\+\\[\\{\\]\\}\\\\\\|\\;\\:\\'\\\"\\,\\<\\>\\/\\?\\s]+)",
+    ),
+  });
   monaco.languages.registerCompletionItemProvider("qsharp", {
     // @ts-expect-error - Monaco's types expect range to be defined,
     // but it's actually optional and the default behavior is better
@@ -197,7 +214,7 @@ function registerMonacoLanguageServiceProviders(
     ) => {
       const completions = await languageService.getCompletions(
         model.uri.toString(),
-        model.getOffsetAt(position),
+        monacoPositionToLsPosition(position),
       );
       return {
         suggestions: completions.items.map((i) => {
@@ -211,6 +228,12 @@ function registerMonacoLanguageServiceProviders(
               break;
             case "keyword":
               kind = monaco.languages.CompletionItemKind.Keyword;
+              break;
+            case "variable":
+              kind = monaco.languages.CompletionItemKind.Variable;
+              break;
+            case "typeParameter":
+              kind = monaco.languages.CompletionItemKind.TypeParameter;
               break;
             case "module":
               kind = monaco.languages.CompletionItemKind.Module;
@@ -226,15 +249,9 @@ function registerMonacoLanguageServiceProviders(
             sortText: i.sortText,
             detail: i.detail,
             additionalTextEdits: i.additionalTextEdits?.map((edit) => {
-              const start = model.getPositionAt(edit.range.start);
-              const end = model.getPositionAt(edit.range.end);
+              const range = edit.range;
               const textEdit: monaco.languages.TextEdit = {
-                range: new monaco.Range(
-                  start.lineNumber,
-                  start.column,
-                  end.lineNumber,
-                  end.column,
-                ),
+                range: lsRangeToMonacoRange(range),
                 text: edit.newText,
               };
               return textEdit;
@@ -254,21 +271,13 @@ function registerMonacoLanguageServiceProviders(
     ) => {
       const hover = await languageService.getHover(
         model.uri.toString(),
-        model.getOffsetAt(position),
+        monacoPositionToLsPosition(position),
       );
 
       if (hover) {
-        const start = model.getPositionAt(hover.span.start);
-        const end = model.getPositionAt(hover.span.end);
-
         return {
           contents: [{ value: hover.contents }],
-          range: {
-            startLineNumber: start.lineNumber,
-            startColumn: start.column,
-            endLineNumber: end.lineNumber,
-            endColumn: end.column,
-          },
+          range: lsRangeToMonacoRange(hover.span),
         };
       }
       return null;
@@ -282,21 +291,42 @@ function registerMonacoLanguageServiceProviders(
     ) => {
       const definition = await languageService.getDefinition(
         model.uri.toString(),
-        model.getOffsetAt(position),
+        monacoPositionToLsPosition(position),
       );
       if (!definition) return null;
       const uri = monaco.Uri.parse(definition.source);
       if (uri.toString() !== model.uri.toString()) return null;
-      const definitionPosition = model.getPositionAt(definition.offset);
       return {
         uri,
-        range: {
-          startLineNumber: definitionPosition.lineNumber,
-          startColumn: definitionPosition.column,
-          endLineNumber: definitionPosition.lineNumber,
-          endColumn: definitionPosition.column,
-        },
+        range: lsRangeToMonacoRange(definition.span),
       };
+    },
+  });
+
+  monaco.languages.registerReferenceProvider("qsharp", {
+    provideReferences: async (
+      model: monaco.editor.ITextModel,
+      position: monaco.Position,
+      context: monaco.languages.ReferenceContext,
+    ) => {
+      const lsReferences = await languageService.getReferences(
+        model.uri.toString(),
+        monacoPositionToLsPosition(position),
+        context.includeDeclaration,
+      );
+      if (!lsReferences) return [];
+      const references: monaco.languages.Location[] = [];
+      for (const reference of lsReferences) {
+        const uri = monaco.Uri.parse(reference.source);
+        // the playground doesn't support sources other than the current source
+        if (uri.toString() == model.uri.toString()) {
+          references.push({
+            uri,
+            range: lsRangeToMonacoRange(reference.span),
+          });
+        }
+      }
+      return references;
     },
   });
 
@@ -308,7 +338,7 @@ function registerMonacoLanguageServiceProviders(
     ) => {
       const sigHelpLs = await languageService.getSignatureHelp(
         model.uri.toString(),
-        model.getOffsetAt(position),
+        monacoPositionToLsPosition(position),
       );
       if (!sigHelpLs) return null;
       return {
@@ -325,7 +355,7 @@ function registerMonacoLanguageServiceProviders(
               } as monaco.IMarkdownString,
               parameters: sig.parameters.map((param) => {
                 return {
-                  label: [param.label.start, param.label.end],
+                  label: param.label,
                   documentation: {
                     value: param.documentation,
                   } as monaco.IMarkdownString,
@@ -346,22 +376,15 @@ function registerMonacoLanguageServiceProviders(
     ) => {
       const rename = await languageService.getRename(
         model.uri.toString(),
-        model.getOffsetAt(position),
+        monacoPositionToLsPosition(position),
         newName,
       );
       if (!rename) return null;
 
       const edits = rename.changes.flatMap(([uri, edits]) => {
         return edits.map((edit) => {
-          const start = model.getPositionAt(edit.range.start);
-          const end = model.getPositionAt(edit.range.end);
           const textEdit: monaco.languages.TextEdit = {
-            range: new monaco.Range(
-              start.lineNumber,
-              start.column,
-              end.lineNumber,
-              end.column,
-            ),
+            range: lsRangeToMonacoRange(edit.range),
             text: edit.newText,
           };
           return {
@@ -378,18 +401,11 @@ function registerMonacoLanguageServiceProviders(
     ) => {
       const prepareRename = await languageService.prepareRename(
         model.uri.toString(),
-        model.getOffsetAt(position),
+        monacoPositionToLsPosition(position),
       );
       if (prepareRename) {
-        const start = model.getPositionAt(prepareRename.range.start);
-        const end = model.getPositionAt(prepareRename.range.end);
         return {
-          range: new monaco.Range(
-            start.lineNumber,
-            start.column,
-            end.lineNumber,
-            end.column,
-          ),
+          range: lsRangeToMonacoRange(prepareRename.range),
           text: prepareRename.newText,
         } as monaco.languages.RenameLocation;
       } else {

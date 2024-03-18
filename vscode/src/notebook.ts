@@ -1,19 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+import { ILanguageService, log } from "qsharp-lang";
 import * as vscode from "vscode";
-import { qsharpLanguageId } from "./common.js";
-import { EventType, sendTelemetryEvent } from "./telemetry.js";
+import { isQsharpNotebookCell, qsharpLanguageId } from "./common.js";
 import { WorkspaceTreeProvider } from "./azure/treeView.js";
 import { getPythonCodeForWorkspace } from "./azure/workspaceActions.js";
 import { notebookTemplate } from "./notebookTemplate.js";
+
+const qsharpCellMagic = "%%qsharp";
+const jupyterNotebookType = "jupyter-notebook";
+const qsharpConfigMimeType = "application/x.qsharp-config";
 
 /**
  * Sets up handlers to detect Q# code cells in Jupyter notebooks and set the language to Q#.
  */
 export function registerQSharpNotebookHandlers() {
-  const qsharpCellMagic = "%%qsharp";
-  const jupyterNotebookType = "jupyter-notebook";
+  vscode.workspace.notebookDocuments.forEach((notebookDocument) => {
+    if (notebookDocument.notebookType === jupyterNotebookType) {
+      updateQSharpCellLanguages(notebookDocument.getCells());
+    }
+  });
 
   vscode.workspace.notebookDocuments.forEach((notebookDocument) => {
     if (notebookDocument.notebookType === jupyterNotebookType) {
@@ -40,31 +47,201 @@ export function registerQSharpNotebookHandlers() {
         const addedCells = event.contentChanges
           .map((change) => change.addedCells)
           .flat();
+
         updateQSharpCellLanguages(changedCells.concat(addedCells));
       }
     }),
   );
 
+  let defaultLanguageId: string | undefined;
+
   function updateQSharpCellLanguages(cells: vscode.NotebookCell[]) {
     for (const cell of cells) {
-      // If this is a code cell that starts with %%qsharp, and language isn't already set to Q#, set it.
+      // If this is a code cell that starts with %%qsharp, and language wasn't already set to Q#, set it.
       if (cell.kind === vscode.NotebookCellKind.Code) {
         const document = cell.document;
-        if (
-          document.languageId !== qsharpLanguageId &&
-          document.lineAt(0).text.startsWith(qsharpCellMagic)
-        ) {
-          vscode.languages.setTextDocumentLanguage(
-            cell.document,
-            qsharpLanguageId,
-          );
-          sendTelemetryEvent(EventType.QSharpJupyterCellInitialized);
+        const currentLanguageId = document.languageId;
+        if (findQSharpCellMagic(document)) {
+          if (currentLanguageId !== qsharpLanguageId) {
+            // Remember the "default" language of the notebook (this will normally be Python)
+            defaultLanguageId = currentLanguageId;
+            vscode.languages.setTextDocumentLanguage(
+              cell.document,
+              qsharpLanguageId,
+            );
+            log.trace(
+              `setting cell ${cell.index} language to ${qsharpLanguageId}`,
+            );
+          }
+        } else {
+          // This is not a %%qsharp cell. If the language was set to Q#,
+          // change it back to the default language.
+          //
+          // If the cell language was not set to Q#, it's out of our purview and we don't
+          // want to automatically change the language settings. For example, this could
+          // be a %%bash cell magic and the user may have intentionally set the language
+          // to "shell".
+          if (currentLanguageId === qsharpLanguageId && defaultLanguageId) {
+            vscode.languages.setTextDocumentLanguage(
+              cell.document,
+              defaultLanguageId,
+            );
+            log.trace(
+              `setting cell ${cell.index} language to ${defaultLanguageId}`,
+            );
+          }
         }
       }
     }
   }
 
   return subscriptions;
+}
+
+const openQSharpNotebooks = new Set<string>();
+
+/**
+ * Returns the end position of the `%%qsharp` cell magic, or `undefined`
+ * if it does not exist.
+ */
+function findQSharpCellMagic(document: vscode.TextDocument) {
+  // Ignore whitespace before the cell magic
+  for (let i = 0; i < document.lineCount; i++) {
+    const line = document.lineAt(i);
+    if (line.isEmptyOrWhitespace) {
+      continue;
+    }
+    return line.text.startsWith(
+      qsharpCellMagic,
+      line.firstNonWhitespaceCharacterIndex,
+    )
+      ? new vscode.Position(
+          i,
+          line.firstNonWhitespaceCharacterIndex + qsharpCellMagic.length,
+        )
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * This one is for syncing with the language service
+ */
+export function registerQSharpNotebookCellUpdateHandlers(
+  languageService: ILanguageService,
+) {
+  vscode.workspace.notebookDocuments.forEach((notebook) => {
+    updateIfQsharpNotebook(notebook);
+  });
+
+  const subscriptions = [];
+  subscriptions.push(
+    vscode.workspace.onDidOpenNotebookDocument((notebook) => {
+      updateIfQsharpNotebook(notebook);
+    }),
+  );
+
+  subscriptions.push(
+    vscode.workspace.onDidChangeNotebookDocument((event) => {
+      updateIfQsharpNotebook(event.notebook);
+    }),
+  );
+
+  subscriptions.push(
+    vscode.workspace.onDidCloseNotebookDocument((notebook) => {
+      closeIfKnownQsharpNotebook(notebook);
+    }),
+  );
+
+  function updateIfQsharpNotebook(notebook: vscode.NotebookDocument) {
+    if (notebook.notebookType === jupyterNotebookType) {
+      const qsharpMetadata = getQSharpConfigMetadata(notebook);
+      const qsharpCells = getQSharpCells(notebook);
+      const notebookUri = notebook.uri.toString();
+      if (qsharpCells.length > 0) {
+        openQSharpNotebooks.add(notebookUri);
+        languageService.updateNotebookDocument(
+          notebookUri,
+          notebook.version,
+          qsharpMetadata,
+          qsharpCells.map((cell) => {
+            return {
+              uri: cell.document.uri.toString(),
+              version: cell.document.version,
+              code: getQSharpText(cell.document),
+            };
+          }),
+        );
+      } else {
+        // All Q# cells could have been deleted, check if we know this doc from previous calls
+        closeIfKnownQsharpNotebook(notebook);
+      }
+    }
+  }
+
+  function closeIfKnownQsharpNotebook(notebook: vscode.NotebookDocument) {
+    const notebookUri = notebook.uri.toString();
+    if (openQSharpNotebooks.has(notebookUri)) {
+      languageService.closeNotebookDocument(notebookUri);
+      openQSharpNotebooks.delete(notebook.uri.toString());
+    }
+  }
+
+  function getQSharpCells(notebook: vscode.NotebookDocument) {
+    return notebook
+      .getCells()
+      .filter((cell) => isQsharpNotebookCell(cell.document));
+  }
+
+  function getQSharpText(document: vscode.TextDocument) {
+    const magicPosition = findQSharpCellMagic(document);
+    if (magicPosition) {
+      const magicOffset = document.offsetAt(magicPosition);
+      // Erase the %%qsharp magic line if it's there.
+      // Replace it with whitespace so that document offsets remain the same.
+      // This will save us from having to map offsets later when
+      // communicating with the language service.
+      return (
+        "".padStart(magicOffset) + document.getText().substring(magicOffset)
+      );
+    } else {
+      // No %%qsharp magic. This can happen if the user manually sets the
+      // cell language to Q#. Python won't recognize the cell as a Q# cell,
+      // so this will fail at runtime, but as the language service we respect
+      // the manually set cell language, so we treat this as any other
+      // Q# cell. We could consider raising a warning here to help the user.
+      log.info(
+        "found Q# cell without %%qsharp magic: " + document.uri.toString(),
+      );
+      return document.getText();
+    }
+  }
+
+  return subscriptions;
+}
+
+/**
+ * Finds an output cell that contains an item with the Q# config MIME type,
+ * and returns the data from it. This data and is generated by the execution of a
+ * `qsharp.init()` call. It's Q# configuration data to be passed
+ * to the language service as "notebook metadata".
+ */
+function getQSharpConfigMetadata(notebook: vscode.NotebookDocument): object {
+  const data = notebook
+    .getCells()
+    .flatMap((cell) => cell.outputs)
+    .flatMap((output) => output.items)
+    .find((item) => {
+      return item.mime === qsharpConfigMimeType;
+    })?.data;
+
+  if (data) {
+    const dataString = new TextDecoder().decode(data);
+    log.trace("found Q# config metadata: " + dataString);
+    return JSON.parse(dataString);
+  } else {
+    return {};
+  }
 }
 
 // Yes, this function is long, but mostly to deal with multi-folder VS Code workspace or multi

@@ -33,13 +33,13 @@ pub enum Ty {
     /// A placeholder type variable used during type inference.
     Infer(InferTyId),
     /// A type parameter.
-    Param(ParamId),
+    Param(Rc<str>, ParamId),
     /// A primitive type.
     Prim(Prim),
     /// A tuple type.
     Tuple(Vec<Ty>),
     /// A user-defined type.
-    Udt(Res),
+    Udt(Rc<str>, Res),
     /// An invalid type.
     #[default]
     Err,
@@ -52,7 +52,7 @@ impl Ty {
     #[must_use]
     pub fn with_package(&self, package: PackageId) -> Self {
         match self {
-            Ty::Infer(_) | Ty::Param(_) | Ty::Prim(_) | Ty::Err => self.clone(),
+            Ty::Infer(_) | Ty::Param(_, _) | Ty::Prim(_) | Ty::Err => self.clone(),
             Ty::Array(item) => Ty::Array(Box::new(item.with_package(package))),
             Ty::Arrow(arrow) => Ty::Arrow(Box::new(arrow.with_package(package))),
             Ty::Tuple(items) => Ty::Tuple(
@@ -61,7 +61,51 @@ impl Ty {
                     .map(|item| item.with_package(package))
                     .collect(),
             ),
-            Ty::Udt(res) => Ty::Udt(res.with_package(package)),
+            Ty::Udt(name, res) => Ty::Udt(name.clone(), res.with_package(package)),
+        }
+    }
+
+    pub fn display(&self) -> String {
+        match self {
+            Ty::Array(item) => {
+                format!("{}[]", item.display())
+            }
+            Ty::Arrow(arrow) => {
+                let arrow_symbol = match arrow.kind {
+                    CallableKind::Function => "->",
+                    CallableKind::Operation => "=>",
+                };
+
+                let functors = match arrow.functors {
+                    FunctorSet::Value(FunctorSetValue::Empty)
+                    | FunctorSet::Param(_, FunctorSetValue::Empty) => String::new(),
+                    FunctorSet::Value(_) | FunctorSet::Infer(_) => {
+                        format!(" is {}", arrow.functors)
+                    }
+                    FunctorSet::Param(_, functors) => {
+                        format!(" is {functors}")
+                    }
+                };
+                format!(
+                    "({} {arrow_symbol} {}{functors})",
+                    arrow.input.display(),
+                    arrow.output.display()
+                )
+            }
+            Ty::Infer(_) | Ty::Err => "?".to_string(),
+            Ty::Param(name, _) | Ty::Udt(name, _) => name.to_string(),
+            Ty::Prim(prim) => format!("{prim:?}"),
+            Ty::Tuple(items) => {
+                if items.is_empty() {
+                    "Unit".to_string()
+                } else if items.len() == 1 {
+                    let item = items.first().expect("expected single item");
+                    format!("({},)", item.display())
+                } else {
+                    let items = items.iter().map(Ty::display).collect::<Vec<_>>().join(", ");
+                    format!("({items})")
+                }
+            }
         }
     }
 }
@@ -69,20 +113,22 @@ impl Ty {
 impl Display for Ty {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            Ty::Array(item) => write!(f, "({item})[]"),
+            Ty::Array(item) => write!(f, "{item}[]"),
             Ty::Arrow(arrow) => Display::fmt(arrow, f),
             Ty::Infer(infer) => Display::fmt(infer, f),
-            Ty::Param(name) => write!(f, "{name}"),
+            Ty::Param(name, param_id) => {
+                write!(f, "Param<\"{name}\": {param_id}>")
+            }
             Ty::Prim(prim) => Debug::fmt(prim, f),
             Ty::Tuple(items) => {
                 if items.is_empty() {
                     f.write_str("Unit")
                 } else {
-                    f.write_str("(")?;
+                    f.write_char('(')?;
                     if let Some((first, rest)) = items.split_first() {
                         Display::fmt(first, f)?;
                         if rest.is_empty() {
-                            f.write_str(",")?;
+                            f.write_char(',')?;
                         } else {
                             for item in rest {
                                 f.write_str(", ")?;
@@ -93,8 +139,10 @@ impl Display for Ty {
                     f.write_str(")")
                 }
             }
-            Ty::Udt(res) => write!(f, "UDT<{res}>"),
-            Ty::Err => f.write_str("?"),
+            Ty::Udt(name, res) => {
+                write!(f, "UDT<\"{name}\": {res}>")
+            }
+            Ty::Err => f.write_char('?'),
         }
     }
 }
@@ -166,10 +214,10 @@ fn instantiate_ty<'a>(
     ty: &Ty,
 ) -> Result<Ty, InstantiationError> {
     match ty {
-        Ty::Err | Ty::Infer(_) | Ty::Prim(_) | Ty::Udt(_) => Ok(ty.clone()),
+        Ty::Err | Ty::Infer(_) | Ty::Prim(_) | Ty::Udt(_, _) => Ok(ty.clone()),
         Ty::Array(item) => Ok(Ty::Array(Box::new(instantiate_ty(arg, item)?))),
         Ty::Arrow(arrow) => Ok(Ty::Arrow(Box::new(instantiate_arrow_ty(arg, arrow)?))),
-        Ty::Param(param) => match arg(param) {
+        Ty::Param(_, param) => match arg(param) {
             Some(GenericArg::Ty(ty_arg)) => Ok(ty_arg.clone()),
             Some(_) => Err(InstantiationError::Kind(*param)),
             None => Ok(ty.clone()),
@@ -189,7 +237,7 @@ fn instantiate_arrow_ty<'a>(
 ) -> Result<Arrow, InstantiationError> {
     let input = instantiate_ty(arg, &arrow.input)?;
     let output = instantiate_ty(arg, &arrow.output)?;
-    let functors = if let FunctorSet::Param(param) = arrow.functors {
+    let functors = if let FunctorSet::Param(param, _) = arrow.functors {
         match arg(&param) {
             Some(GenericArg::Functor(functor_arg)) => *functor_arg,
             Some(_) => return Err(InstantiationError::Kind(param)),
@@ -210,7 +258,7 @@ fn instantiate_arrow_ty<'a>(
 impl Display for GenericParam {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
-            GenericParam::Ty => write!(f, "type"),
+            GenericParam::Ty(name) => write!(f, "type {name}"),
             GenericParam::Functor(min) => write!(f, "functor ({min})"),
         }
     }
@@ -220,9 +268,24 @@ impl Display for GenericParam {
 #[derive(Clone, Debug, PartialEq)]
 pub enum GenericParam {
     /// A type parameter.
-    Ty,
+    Ty(TypeParamName),
     /// A functor parameter with a lower bound.
     Functor(FunctorSetValue),
+}
+
+/// The name of a generic type parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeParamName {
+    /// The span.
+    pub span: Span,
+    /// The name.
+    pub name: Rc<str>,
+}
+
+impl Display for TypeParamName {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "{} \"{}\"", self.span, self.name)
+    }
 }
 
 /// A generic parameter ID.
@@ -352,7 +415,7 @@ pub enum FunctorSet {
     /// An evaluated set.
     Value(FunctorSetValue),
     /// A functor parameter.
-    Param(ParamId),
+    Param(ParamId, FunctorSetValue),
     /// A placeholder functor variable used during type inference.
     Infer(InferFunctorId),
 }
@@ -367,7 +430,7 @@ impl FunctorSet {
     pub fn expect_value(self, msg: &str) -> FunctorSetValue {
         match self {
             Self::Value(value) => value,
-            Self::Param(_) | Self::Infer(_) => panic!("{msg}"),
+            Self::Param(_, _) | Self::Infer(_) => panic!("{msg}"),
         }
     }
 }
@@ -376,7 +439,7 @@ impl Display for FunctorSet {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
             Self::Value(value) => Display::fmt(value, f),
-            Self::Param(param) => Display::fmt(param, f),
+            Self::Param(param, _) => write!(f, "Param<{param}>"),
             Self::Infer(infer) => Display::fmt(infer, f),
         }
     }
@@ -435,6 +498,17 @@ impl FunctorSetValue {
             | (Self::Ctl, Self::Adj) => Self::CtlAdj,
         }
     }
+
+    #[must_use]
+    pub fn satisfies(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (_, Self::Empty)
+                | (Self::Adj | Self::CtlAdj, Self::Adj)
+                | (Self::Ctl | Self::CtlAdj, Self::Ctl)
+                | (Self::CtlAdj, Self::CtlAdj)
+        )
+    }
 }
 
 impl Display for FunctorSetValue {
@@ -483,7 +557,7 @@ impl Udt {
             ty: Box::new(Arrow {
                 kind: CallableKind::Function,
                 input: Box::new(self.get_pure_ty()),
-                output: Box::new(Ty::Udt(Res::Item(id))),
+                output: Box::new(Ty::Udt(self.name.clone(), Res::Item(id))),
                 functors: FunctorSet::Value(FunctorSetValue::Empty),
             }),
         }

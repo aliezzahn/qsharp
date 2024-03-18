@@ -4,13 +4,14 @@
 #[cfg(test)]
 mod tests;
 
-use super::{keyword::Keyword, scan::Scanner, ty::ty, Error, Parser, Result};
+use super::{keyword::Keyword, scan::ParserContext, ty::ty, Error, Parser, Result};
 use crate::{
+    item::throw_away_doc,
     lex::{Delim, TokenKind},
     ErrorKind,
 };
 use qsc_ast::ast::{Ident, NodeId, Pat, PatKind, Path};
-use qsc_data_structures::span::Span;
+use qsc_data_structures::span::{Span, WithSpan};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FinalSep {
@@ -33,7 +34,7 @@ impl FinalSep {
     }
 }
 
-pub(super) fn token(s: &mut Scanner, t: TokenKind) -> Result<()> {
+pub(super) fn token(s: &mut ParserContext, t: TokenKind) -> Result<()> {
     if s.peek().kind == t {
         s.advance();
         Ok(())
@@ -42,7 +43,7 @@ pub(super) fn token(s: &mut Scanner, t: TokenKind) -> Result<()> {
     }
 }
 
-pub(super) fn apos_ident(s: &mut Scanner) -> Result<Box<Ident>> {
+pub(super) fn apos_ident(s: &mut ParserContext) -> Result<Box<Ident>> {
     let peek = s.peek();
     if peek.kind == TokenKind::AposIdent {
         let name = s.read().into();
@@ -61,7 +62,7 @@ pub(super) fn apos_ident(s: &mut Scanner) -> Result<Box<Ident>> {
     }
 }
 
-pub(super) fn ident(s: &mut Scanner) -> Result<Box<Ident>> {
+pub(super) fn ident(s: &mut ParserContext) -> Result<Box<Ident>> {
     let peek = s.peek();
     if peek.kind == TokenKind::Ident {
         let name = s.read().into();
@@ -76,7 +77,9 @@ pub(super) fn ident(s: &mut Scanner) -> Result<Box<Ident>> {
     }
 }
 
-pub(super) fn dot_ident(s: &mut Scanner) -> Result<Box<Ident>> {
+/// This function parses a [Path] from the given context
+/// and converts it into a single ident, which contains dots (`.`)
+pub(super) fn dot_ident(s: &mut ParserContext) -> Result<Box<Ident>> {
     let p = path(s)?;
     let mut name = String::new();
     if let Some(namespace) = p.namespace {
@@ -92,7 +95,10 @@ pub(super) fn dot_ident(s: &mut Scanner) -> Result<Box<Ident>> {
     }))
 }
 
-pub(super) fn path(s: &mut Scanner) -> Result<Box<Path>> {
+/// A `path` is a dot-separated list of idents like "Foo.Bar.Baz"
+/// this can be either a namespace name (in an open statement or namespace declaration) or
+/// it can be a direct reference to something in a namespace, like `Microsoft.Quantum.Diagnostics.DumpMachine()`
+pub(super) fn path(s: &mut ParserContext) -> Result<Box<Path>> {
     let lo = s.peek().span.lo;
     let mut parts = vec![ident(s)?];
     while token(s, TokenKind::Dot).is_ok() {
@@ -121,7 +127,8 @@ pub(super) fn path(s: &mut Scanner) -> Result<Box<Path>> {
     }))
 }
 
-pub(super) fn pat(s: &mut Scanner) -> Result<Box<Pat>> {
+pub(super) fn pat(s: &mut ParserContext) -> Result<Box<Pat>> {
+    throw_away_doc(s);
     let lo = s.peek().span.lo;
     let kind = if token(s, TokenKind::Keyword(Keyword::Underscore)).is_ok() {
         let ty = if token(s, TokenKind::Colon).is_ok() {
@@ -153,7 +160,7 @@ pub(super) fn pat(s: &mut Scanner) -> Result<Box<Pat>> {
     }))
 }
 
-pub(super) fn opt<T>(s: &mut Scanner, mut p: impl Parser<T>) -> Result<Option<T>> {
+pub(super) fn opt<T>(s: &mut ParserContext, mut p: impl Parser<T>) -> Result<Option<T>> {
     let offset = s.peek().span.lo;
     match p(s) {
         Ok(x) => Ok(Some(x)),
@@ -162,7 +169,7 @@ pub(super) fn opt<T>(s: &mut Scanner, mut p: impl Parser<T>) -> Result<Option<T>
     }
 }
 
-pub(super) fn many<T>(s: &mut Scanner, mut p: impl Parser<T>) -> Result<Vec<T>> {
+pub(super) fn many<T>(s: &mut ParserContext, mut p: impl Parser<T>) -> Result<Vec<T>> {
     let mut xs = Vec::new();
     while let Some(x) = opt(s, &mut p)? {
         xs.push(x);
@@ -170,12 +177,29 @@ pub(super) fn many<T>(s: &mut Scanner, mut p: impl Parser<T>) -> Result<Vec<T>> 
     Ok(xs)
 }
 
-pub(super) fn seq<T>(s: &mut Scanner, mut p: impl Parser<T>) -> Result<(Vec<T>, FinalSep)> {
+pub(super) fn seq<T>(s: &mut ParserContext, mut p: impl Parser<T>) -> Result<(Vec<T>, FinalSep)>
+where
+    T: Default + WithSpan,
+{
     let mut xs = Vec::new();
     let mut final_sep = FinalSep::Missing;
+    while s.peek().kind == TokenKind::Comma {
+        let mut span = s.peek().span;
+        span.hi = span.lo;
+        s.push_error(Error(ErrorKind::MissingSeqEntry(span)));
+        xs.push(T::default().with_span(span));
+        s.advance();
+    }
     while let Some(x) = opt(s, &mut p)? {
         xs.push(x);
         if token(s, TokenKind::Comma).is_ok() {
+            while s.peek().kind == TokenKind::Comma {
+                let mut span = s.peek().span;
+                span.hi = span.lo;
+                s.push_error(Error(ErrorKind::MissingSeqEntry(span)));
+                xs.push(T::default().with_span(span));
+                s.advance();
+            }
             final_sep = FinalSep::Present;
         } else {
             final_sep = FinalSep::Missing;
@@ -186,7 +210,7 @@ pub(super) fn seq<T>(s: &mut Scanner, mut p: impl Parser<T>) -> Result<(Vec<T>, 
 }
 
 pub(super) fn recovering<T>(
-    s: &mut Scanner,
+    s: &mut ParserContext,
     default: impl FnOnce(Span) -> T,
     tokens: &[TokenKind],
     mut p: impl Parser<T>,
@@ -203,30 +227,22 @@ pub(super) fn recovering<T>(
     }
 }
 
-pub(super) fn recovering_semi(s: &mut Scanner) -> Result<()> {
-    match token(s, TokenKind::Semi) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            s.push_error(error);
-            // no recovery, just move on to the next token
-            Ok(())
-        }
+pub(super) fn recovering_semi(s: &mut ParserContext) {
+    if let Err(error) = token(s, TokenKind::Semi) {
+        // no recovery, just move on to the next token
+        s.push_error(error);
     }
 }
 
-pub(super) fn recovering_token(s: &mut Scanner, t: TokenKind) -> Result<()> {
-    match token(s, t) {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            s.push_error(error);
-            s.recover(&[t]);
-            Ok(())
-        }
+pub(super) fn recovering_token(s: &mut ParserContext, t: TokenKind) {
+    if let Err(error) = token(s, t) {
+        s.push_error(error);
+        s.recover(&[t]);
     }
 }
 
 pub(super) fn barrier<'a, T>(
-    s: &mut Scanner<'a>,
+    s: &mut ParserContext<'a>,
     tokens: &'a [TokenKind],
     mut p: impl Parser<T>,
 ) -> Result<T> {
@@ -240,7 +256,7 @@ pub(super) fn shorten(from_start: usize, from_end: usize, s: &str) -> &str {
     &s[from_start..s.len() - from_end]
 }
 
-fn advanced(s: &Scanner, from: u32) -> bool {
+fn advanced(s: &ParserContext, from: u32) -> bool {
     s.peek().span.lo > from
 }
 

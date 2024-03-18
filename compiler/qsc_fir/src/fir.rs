@@ -11,7 +11,10 @@
 use crate::ty::{Arrow, FunctorSet, FunctorSetValue, GenericArg, GenericParam, Scheme, Ty, Udt};
 use indenter::{indented, Indented};
 use num_bigint::BigInt;
-use qsc_data_structures::{index_map::IndexMap, span::Span};
+use qsc_data_structures::{
+    index_map::{IndexMap, Iter},
+    span::Span,
+};
 use std::{
     cmp::Ordering,
     fmt::{self, Debug, Display, Formatter, Write},
@@ -206,6 +209,7 @@ fir_id!(BlockId);
 fir_id!(ExprId);
 fir_id!(PatId);
 fir_id!(StmtId);
+fir_id!(LocalVarId);
 
 /// A unique identifier for a package within a package store.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -297,7 +301,7 @@ pub enum Res {
     /// A global item.
     Item(ItemId),
     /// A local variable.
-    Local(NodeId),
+    Local(LocalVarId),
 }
 
 impl Display for Res {
@@ -308,6 +312,230 @@ impl Display for Res {
             Res::Local(node) => write!(f, "Local {node}"),
         }
     }
+}
+
+/// A global item.
+pub enum Global<'a> {
+    /// A global callable.
+    Callable(&'a CallableDecl),
+    /// A global user-defined type.
+    Udt,
+}
+
+/// A unique identifier for an item within a package store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoreItemId {
+    /// The package ID.
+    pub package: PackageId,
+    /// The item ID.
+    pub item: LocalItemId,
+}
+
+impl Display for StoreItemId {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "<item {} in package {}>", self.item, self.package)
+    }
+}
+
+impl From<(PackageId, LocalItemId)> for StoreItemId {
+    fn from(tuple: (PackageId, LocalItemId)) -> Self {
+        Self {
+            package: tuple.0,
+            item: tuple.1,
+        }
+    }
+}
+
+/// A unique identifier for a block within a package store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoreBlockId {
+    /// The package ID.
+    pub package: PackageId,
+    /// The item ID.
+    pub block: BlockId,
+}
+
+impl Display for StoreBlockId {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "<block {} in package {}>", self.block, self.package)
+    }
+}
+
+impl From<(PackageId, BlockId)> for StoreBlockId {
+    fn from(tuple: (PackageId, BlockId)) -> Self {
+        Self {
+            package: tuple.0,
+            block: tuple.1,
+        }
+    }
+}
+
+/// A unique identifier for an expression within a package store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoreExprId {
+    /// The package ID.
+    pub package: PackageId,
+    /// The expression ID.
+    pub expr: ExprId,
+}
+
+impl Display for StoreExprId {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "<expression {} in package {}>", self.expr, self.package)
+    }
+}
+
+impl From<(PackageId, ExprId)> for StoreExprId {
+    fn from(tuple: (PackageId, ExprId)) -> Self {
+        Self {
+            package: tuple.0,
+            expr: tuple.1,
+        }
+    }
+}
+
+/// A unique identifier for a pattern within a package store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StorePatId {
+    /// The package ID.
+    pub package: PackageId,
+    /// The pat ID.
+    pub pat: PatId,
+}
+
+impl Display for StorePatId {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "<pattern {} in package {}>", self.pat, self.package)
+    }
+}
+
+impl From<(PackageId, PatId)> for StorePatId {
+    fn from(tuple: (PackageId, PatId)) -> Self {
+        Self {
+            package: tuple.0,
+            pat: tuple.1,
+        }
+    }
+}
+
+/// A unique identifier for a statement within a package store.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StoreStmtId {
+    /// The package ID.
+    pub package: PackageId,
+    /// The statement ID.
+    pub stmt: StmtId,
+}
+
+impl Display for StoreStmtId {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "<pattern {} in package {}>", self.stmt, self.package)
+    }
+}
+
+impl From<(PackageId, StmtId)> for StoreStmtId {
+    fn from(tuple: (PackageId, StmtId)) -> Self {
+        Self {
+            package: tuple.0,
+            stmt: tuple.1,
+        }
+    }
+}
+
+/// A trait to find elements in a package store.
+pub trait PackageStoreLookup {
+    /// Gets a block.
+    fn get_block(&self, id: StoreBlockId) -> &Block;
+    /// Gets an expression.
+    fn get_expr(&self, id: StoreExprId) -> &Expr;
+    /// Gets a global.
+    fn get_global(&self, id: StoreItemId) -> Option<Global>;
+    /// Gets a pat.
+    fn get_pat(&self, id: StorePatId) -> &Pat;
+    /// Gets a statement.
+    fn get_stmt(&self, id: StoreStmtId) -> &Stmt;
+}
+
+/// A FIR package store.
+#[derive(Debug, Default)]
+pub struct PackageStore(IndexMap<PackageId, Package>);
+
+impl PackageStoreLookup for PackageStore {
+    fn get_block(&self, id: StoreBlockId) -> &Block {
+        self.get(id.package).get_block(id.block)
+    }
+
+    fn get_expr(&self, id: StoreExprId) -> &Expr {
+        self.get(id.package).get_expr(id.expr)
+    }
+
+    fn get_global(&self, id: StoreItemId) -> Option<Global> {
+        self.get(id.package).get_global(id.item)
+    }
+
+    fn get_pat(&self, id: StorePatId) -> &Pat {
+        self.get(id.package).get_pat(id.pat)
+    }
+
+    fn get_stmt(&self, id: StoreStmtId) -> &Stmt {
+        self.get(id.package).get_stmt(id.stmt)
+    }
+}
+
+impl PackageStore {
+    /// Gets a package from the store.
+    #[must_use]
+    pub fn get(&self, id: PackageId) -> &Package {
+        self.0.get(id).expect("store should have package")
+    }
+
+    /// Gets a mutable package from the store.
+    #[must_use]
+    pub fn get_mut(&mut self, id: PackageId) -> &mut Package {
+        self.0.get_mut(id).expect("store should have package")
+    }
+
+    /// Inserts a package to the store.
+    pub fn insert(&mut self, id: PackageId, package: Package) {
+        self.0.insert(id, package);
+    }
+
+    /// Gets a package store iterator.
+    #[must_use]
+    pub fn iter(&self) -> Iter<PackageId, Package> {
+        self.0.iter()
+    }
+
+    /// Creates a package store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<'a> IntoIterator for &'a PackageStore {
+    type IntoIter = qsc_data_structures::index_map::Iter<'a, PackageId, Package>;
+    type Item = (PackageId, &'a Package);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// A trait to find elements in a package.
+pub trait PackageLookup {
+    /// Gets a block.
+    fn get_block(&self, id: BlockId) -> &Block;
+    /// Gets an expression.
+    fn get_expr(&self, id: ExprId) -> &Expr;
+    /// Gets a global.
+    fn get_global(&self, id: LocalItemId) -> Option<Global>;
+    /// Gets an item.
+    fn get_item(&self, id: LocalItemId) -> &Item;
+    /// Gets a pat.
+    fn get_pat(&self, id: PatId) -> &Pat;
+    /// Gets a statement.
+    fn get_stmt(&self, id: StmtId) -> &Stmt;
 }
 
 /// The root node of the FIR.
@@ -342,12 +570,73 @@ impl Display for Package {
         write!(indent, "Package:")?;
         indent = set_indentation(indent, 1);
         if let Some(e) = &self.entry {
-            write!(indent, "\nentry expression: {e}")?;
+            write!(indent, "\nEntry Expression: {e}")?;
         }
+
+        write!(indent, "\nItems:")?;
+        indent = set_indentation(indent, 2);
         for item in self.items.values() {
             write!(indent, "\n{item}")?;
         }
+
+        indent = set_indentation(indent, 1);
+        write!(indent, "\nBlocks:")?;
+        indent = set_indentation(indent, 2);
+        for block in self.blocks.values() {
+            write!(indent, "\n{block}")?;
+        }
+
+        indent = set_indentation(indent, 1);
+        write!(indent, "\nStmts:")?;
+        indent = set_indentation(indent, 2);
+        for stmt in self.stmts.values() {
+            write!(indent, "\n{stmt}")?;
+        }
+
+        indent = set_indentation(indent, 1);
+        write!(indent, "\nExprs:")?;
+        indent = set_indentation(indent, 2);
+        for expr in self.exprs.values() {
+            write!(indent, "\n{expr}")?;
+        }
+
+        indent = set_indentation(indent, 1);
+        write!(indent, "\nPats:")?;
+        indent = set_indentation(indent, 2);
+        for pat in self.pats.values() {
+            write!(indent, "\n{pat}")?;
+        }
         Ok(())
+    }
+}
+
+impl PackageLookup for Package {
+    fn get_block(&self, id: BlockId) -> &Block {
+        self.blocks.get(id).expect("Block not found")
+    }
+
+    fn get_expr(&self, id: ExprId) -> &Expr {
+        self.exprs.get(id).expect("Expression not found")
+    }
+
+    fn get_global(&self, id: LocalItemId) -> Option<Global> {
+        match &self.items.get(id)?.kind {
+            ItemKind::Callable(callable) => Some(Global::Callable(callable)),
+            ItemKind::Namespace(..) => None,
+            ItemKind::Ty(..) => Some(Global::Udt),
+        }
+    }
+
+    fn get_item(&self, id: LocalItemId) -> &Item {
+        self.items.get(id).expect("Item not found")
+    }
+
+    fn get_pat(&self, id: PatId) -> &Pat {
+        self.pats.get(id).expect("Pattern not found")
+    }
+
+    fn get_stmt(&self, id: StmtId) -> &Stmt {
+        self.stmts.get(id).expect("Statement not found")
     }
 }
 
@@ -452,14 +741,8 @@ pub struct CallableDecl {
     pub output: Ty,
     /// The functors supported by the callable.
     pub functors: FunctorSetValue,
-    /// The callable body.
-    pub body: SpecDecl,
-    /// The adjoint specialization.
-    pub adj: Option<SpecDecl>,
-    /// The controlled specialization.
-    pub ctl: Option<SpecDecl>,
-    /// The controlled adjoint specialization.
-    pub ctl_adj: Option<SpecDecl>,
+    /// The callable implementation.
+    pub implementation: CallableImpl,
 }
 
 impl CallableDecl {
@@ -499,6 +782,56 @@ impl Display for CallableDecl {
         write!(indent, "\ninput: {}", self.input)?;
         write!(indent, "\noutput: {}", self.output)?;
         write!(indent, "\nfunctors: {}", self.functors)?;
+        write!(indent, "\nimplementation: {}", self.implementation)?;
+        Ok(())
+    }
+}
+
+/// A callable implementations.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CallableImpl {
+    /// An intrinsic callable implementation.
+    Intrinsic,
+    /// A specialized callable implementation.
+    Spec(SpecImpl),
+}
+
+impl Display for CallableImpl {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut indent = set_indentation(indented(f), 0);
+        match self {
+            CallableImpl::Intrinsic => {
+                write!(indent, "Instrinsic")?;
+            }
+            CallableImpl::Spec(spec_impl) => {
+                write!(indent, "Spec:")?;
+                indent = set_indentation(indent, 1);
+                write!(indent, "\n{spec_impl}")?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// A specialized implementation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpecImpl {
+    /// The body implementation.
+    pub body: SpecDecl,
+    /// The adjoint specialization.
+    pub adj: Option<SpecDecl>,
+    /// The controlled specialization.
+    pub ctl: Option<SpecDecl>,
+    /// The controlled adjoint specialization.
+    pub ctl_adj: Option<SpecDecl>,
+}
+
+impl Display for SpecImpl {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let mut indent = set_indentation(indented(f), 0);
+        write!(indent, "SpecImpl:",)?;
+        indent = set_indentation(indent, 1);
         write!(indent, "\nbody: {}", self.body)?;
         match &self.adj {
             Some(spec) => write!(indent, "\nadj: {spec}")?,
@@ -523,40 +856,19 @@ pub struct SpecDecl {
     pub id: NodeId,
     /// The span.
     pub span: Span,
-    /// The body of the specialization.
-    pub body: SpecBody,
+    /// The block that implements the specialization.
+    pub block: BlockId,
+    /// The input of the specialization.
+    pub input: Option<PatId>,
 }
 
 impl Display for SpecDecl {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "SpecDecl {} {}: {}", self.id, self.span, self.body)
-    }
-}
-
-/// The body of a specialization.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SpecBody {
-    /// The strategy to use to automatically generate the specialization.
-    Gen(SpecGen),
-    /// A manual implementation of the specialization.
-    Impl(Option<PatId>, BlockId),
-}
-
-impl Display for SpecBody {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut indent = set_indentation(indented(f), 0);
-        match self {
-            SpecBody::Gen(sg) => write!(indent, "Gen: {sg:?}")?,
-            SpecBody::Impl(p, b) => {
-                write!(indent, "Impl:")?;
-                indent = set_indentation(indent, 1);
-                if let Some(p) = p {
-                    write!(indent, "\n{p}")?;
-                }
-                write!(indent, "\n{b}")?;
-            }
-        }
-        Ok(())
+        write!(
+            f,
+            "SpecDecl {} {}: {:?} {}",
+            self.id, self.span, self.input, self.block
+        )
     }
 }
 
@@ -619,8 +931,6 @@ pub enum StmtKind {
     Item(LocalItemId),
     /// A let or mutable binding: `let a = b;` or `mutable x = b;`.
     Local(Mutability, PatId, ExprId),
-    /// A use or borrow qubit allocation: `use a = b;` or `borrow a = b;`.
-    Qubit(QubitSource, PatId, QubitInit, Option<BlockId>),
     /// An expression with a trailing semicolon.
     Semi(ExprId),
 }
@@ -636,15 +946,6 @@ impl Display for StmtKind {
                 indent = set_indentation(indent, 1);
                 write!(indent, "\n{lhs}")?;
                 write!(indent, "\n{rhs}")?;
-            }
-            StmtKind::Qubit(s, lhs, rhs, block) => {
-                write!(indent, "Qubit ({s:?})")?;
-                indent = set_indentation(indent, 1);
-                write!(indent, "\n{lhs}")?;
-                write!(indent, "\n{rhs}")?;
-                if let Some(b) = block {
-                    write!(indent, "\n{b}")?;
-                }
             }
             StmtKind::Semi(e) => write!(indent, "Semi: {e}")?,
         }
@@ -697,7 +998,7 @@ pub enum ExprKind {
     /// A call: `a(b)`.
     Call(ExprId, ExprId),
     /// A closure that fixes the vector of local variables as arguments to the callable item.
-    Closure(Vec<NodeId>, LocalItemId),
+    Closure(Vec<LocalVarId>, LocalItemId),
     /// A failure: `fail "message"`.
     Fail(ExprId),
     /// A field accessor: `a::F`.
@@ -865,7 +1166,7 @@ fn display_call(mut indent: Indented<Formatter>, callable: ExprId, arg: ExprId) 
 
 fn display_closure(
     mut f: Indented<Formatter>,
-    args: &[NodeId],
+    args: &[LocalVarId],
     callable: LocalItemId,
 ) -> fmt::Result {
     f.write_str("Closure([")?;
@@ -1086,71 +1387,11 @@ impl Display for PatKind {
     }
 }
 
-/// A qubit initializer.
-#[derive(Clone, Debug, PartialEq)]
-pub struct QubitInit {
-    /// The node ID.
-    pub id: NodeId,
-    /// The span.
-    pub span: Span,
-    /// The qubit initializer type.
-    pub ty: Ty,
-    /// The qubit initializer kind.
-    pub kind: QubitInitKind,
-}
-
-impl Display for QubitInit {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "QubitInit {} {} [Type {}]: {}",
-            self.id, self.span, self.ty, self.kind
-        )
-    }
-}
-
-/// A qubit initializer kind.
-#[derive(Clone, Debug, PartialEq)]
-pub enum QubitInitKind {
-    /// An array of qubits: `Qubit[a]`.
-    Array(ExprId),
-    /// A single qubit: `Qubit()`.
-    Single,
-    /// A tuple: `(a, b, c)`.
-    Tuple(Vec<QubitInit>),
-}
-
-impl Display for QubitInitKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut indent = set_indentation(indented(f), 0);
-        match self {
-            QubitInitKind::Array(e) => {
-                write!(indent, "Array:")?;
-                indent = set_indentation(indent, 1);
-                write!(indent, "\n{e}")?;
-            }
-            QubitInitKind::Single => write!(indent, "Single")?,
-            QubitInitKind::Tuple(qis) => {
-                if qis.is_empty() {
-                    write!(indent, "Unit")?;
-                } else {
-                    write!(indent, "Tuple:")?;
-                    indent = set_indentation(indent, 1);
-                    for qi in qis {
-                        write!(indent, "\n{qi}")?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 /// An identifier.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Ident {
     /// The node ID.
-    pub id: NodeId,
+    pub id: LocalVarId,
     /// The span.
     pub span: Span,
     /// The identifier name.
@@ -1337,22 +1578,6 @@ impl Display for Functor {
             Functor::Ctl => f.write_str("Ctl"),
         }
     }
-}
-
-/// A strategy for generating a specialization.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SpecGen {
-    /// Choose a strategy automatically.
-    Auto,
-    /// Distributes controlled qubits.
-    Distribute,
-    /// A specialization implementation is not generated, but is instead left as an opaque
-    /// declaration.
-    Intrinsic,
-    /// Inverts the order of operations.
-    Invert,
-    /// Uses the body specialization without modification.
-    Slf,
 }
 
 /// A unary operator.

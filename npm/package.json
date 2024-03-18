@@ -19,11 +19,13 @@
     },
     "./compiler-worker": "./dist/compiler/worker-browser.js",
     "./language-service-worker": "./dist/language-service/worker-browser.js",
-    "./debug-service-worker": "./dist/debug-service/worker-browser.js"
+    "./debug-service-worker": "./dist/debug-service/worker-browser.js",
+    "./ux": "./ux/index.ts"
   },
   "scripts": {
-    "build": "npm run generate && npm run build:tsc",
+    "build": "npm run docs && npm run generate && npm run build:tsc",
     "generate": "node generate_katas_content.js && node generate_samples_content.js",
+    "docs": "node generate_docs.js",
     "build:tsc": "node ../node_modules/typescript/bin/tsc -p ./src/tsconfig.json",
     "tsc:watch": "node ../node_modules/typescript/bin/tsc -p ./src/tsconfig.json --watch",
     "test": "node --test"
@@ -31,6 +33,8 @@
   "type": "module",
   "files": [
     "dist",
-    "lib"
+    "docs",
+    "lib",
+    "ux"
   ]
 }

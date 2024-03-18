@@ -1,17 +1,26 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![allow(clippy::needless_raw_string_hashes)]
+
 use expect_test::{expect, Expect};
 use indoc::indoc;
-use qsc_frontend::compile::{self, compile, PackageStore, SourceMap, TargetProfile};
+use qsc_data_structures::language_features::LanguageFeatures;
+use qsc_frontend::compile::{self, compile, PackageStore, RuntimeCapabilityFlags, SourceMap};
 use qsc_hir::visit::Visitor;
 
 use crate::borrowck::Checker;
 
 fn check(expr: &str, expect: &Expect) {
     let store = PackageStore::new(compile::core());
-    let sources = SourceMap::new([("test".into(), "".into())], Some(expr.into()));
-    let unit = compile(&store, &[], sources, TargetProfile::Full);
+    let sources: SourceMap = SourceMap::new([("test".into(), "".into())], Some(expr.into()));
+    let unit = compile(
+        &store,
+        &[],
+        sources,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     assert!(unit.errors.is_empty(), "{:?}", unit.errors);
 
     let mut borrow_check = Checker::default();

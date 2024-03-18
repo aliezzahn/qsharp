@@ -6,18 +6,18 @@ mod tests;
 
 use miette::Diagnostic;
 use qsc_ast::{
-    ast::{self, CallableDecl, Ident, NodeId, TopLevelNode},
-    visit::{self as ast_visit, Visitor as AstVisitor},
+    ast::{self, CallableBody, CallableDecl, Ident, NodeId, SpecBody, SpecGen, TopLevelNode},
+    visit::{self as ast_visit, walk_attr, Visitor as AstVisitor},
 };
 use qsc_data_structures::{index_map::IndexMap, span::Span};
 use qsc_hir::{
     assigner::Assigner,
     global,
-    hir::{self, ItemId, LocalItemId, PackageId},
+    hir::{self, ItemId, ItemStatus, LocalItemId, PackageId},
     ty::{ParamId, Prim},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::{collections::hash_map::Entry, rc::Rc, vec};
+use std::{collections::hash_map::Entry, rc::Rc, str::FromStr, vec};
 use thiserror::Error;
 
 use crate::compile::preprocess::TrackedName;
@@ -26,17 +26,19 @@ const PRELUDE: &[&str] = &[
     "Microsoft.Quantum.Canon",
     "Microsoft.Quantum.Core",
     "Microsoft.Quantum.Intrinsic",
+    "Microsoft.Quantum.Measurement",
 ];
 
 // All AST Path nodes get mapped
+// All AST Ident nodes get mapped, except those under AST Path nodes
 pub(super) type Names = IndexMap<NodeId, Res>;
 
 /// A resolution. This connects a usage of a name with the declaration of that name by uniquely
 /// identifying the node that declared it.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Res {
-    /// A global item.
-    Item(ItemId),
+    /// A global or local item.
+    Item(ItemId, ItemStatus),
     /// A local variable.
     Local(NodeId),
     /// A type/functor parameter in the generics section of the parent callable decl.
@@ -83,6 +85,13 @@ pub(super) enum Error {
     #[diagnostic(code("Qsc.Resolve.DuplicateBinding"))]
     DuplicateBinding(String, #[label] Span),
 
+    #[error("duplicate intrinsic `{0}`")]
+    #[diagnostic(help(
+        "each callable declared as `body intrinsic` must have a globally unique name"
+    ))]
+    #[diagnostic(code("Qsc.Resolve.DuplicateIntrinsic"))]
+    DuplicateIntrinsic(String, #[label] Span),
+
     #[error("`{0}` not found")]
     #[diagnostic(code("Qsc.Resolve.NotFound"))]
     NotFound(String, #[label] Span),
@@ -93,20 +102,41 @@ pub(super) enum Error {
     ))]
     #[diagnostic(code("Qsc.Resolve.NotFound"))]
     NotAvailable(String, String, #[label] Span),
+
+    #[error("use of unimplemented item `{0}`")]
+    #[diagnostic(help("this item is not implemented and cannot be used"))]
+    #[diagnostic(code("Qsc.Resolve.Unimplemented"))]
+    Unimplemented(String, #[label] Span),
 }
 
-struct Scope {
+#[derive(Debug, Clone)]
+pub struct Scope {
+    /// The span that the scope applies to. For callables and namespaces, this includes
+    /// the entire callable / namespace declaration. For blocks, this includes the braces.
+    span: Span,
     kind: ScopeKind,
+    /// Open statements. The key is the namespace name or alias.
     opens: FxHashMap<Rc<str>, Vec<Open>>,
+    /// Local newtype declarations.
     tys: FxHashMap<Rc<str>, ItemId>,
+    /// Local callable and newtype declarations.
     terms: FxHashMap<Rc<str>, ItemId>,
-    vars: FxHashMap<Rc<str>, NodeId>,
+    /// Local variables, including callable parameters, for loop bindings, etc.
+    /// The u32 is the `valid_at` offset - the lowest offset at which the variable name is available.
+    /// It's used to determine which variables are visible at a specific offset in the scope.
+    ///
+    /// Bug: Because we keep track of only one `valid_at` offset per name,
+    /// when a variable is later shadowed in the same scope,
+    /// it is missed in the list. https://github.com/microsoft/qsharp/issues/897
+    vars: FxHashMap<Rc<str>, (u32, NodeId)>,
+    /// Type parameters.
     ty_vars: FxHashMap<Rc<str>, ParamId>,
 }
 
 impl Scope {
-    fn new(kind: ScopeKind) -> Self {
+    fn new(kind: ScopeKind, span: Span) -> Self {
         Self {
+            span,
             kind,
             opens: FxHashMap::default(),
             tys: FxHashMap::default(),
@@ -125,10 +155,93 @@ impl Scope {
     }
 }
 
-struct GlobalScope {
+type ScopeId = usize;
+
+#[derive(Debug, Clone, Default)]
+pub struct Locals {
+    // order is ascending by span (outermost -> innermost)
+    scopes: Vec<Scope>,
+}
+
+impl Locals {
+    fn get_scopes<'a>(&'a self, scope_chain: &'a [ScopeId]) -> impl Iterator<Item = &Scope> + 'a {
+        // reverse to go from innermost -> outermost
+        scope_chain.iter().rev().map(|id| {
+            self.scopes
+                .get(*id)
+                .unwrap_or_else(|| panic!("scope with id {id:?} should exist"))
+        })
+    }
+
+    fn push_scope(&mut self, s: Scope) -> ScopeId {
+        let id = self.scopes.len();
+        self.scopes.insert(id, s);
+        id
+    }
+
+    fn get_scope_mut(&mut self, id: ScopeId) -> &mut Scope {
+        self.scopes
+            .get_mut(id)
+            .unwrap_or_else(|| panic!("scope with id {id:?} should exist"))
+    }
+
+    #[must_use]
+    pub fn get_all_at_offset(&self, offset: u32) -> Vec<Local> {
+        let mut vars = true;
+        let mut all_locals = Vec::new();
+        self.for_each_scope_at_offset(offset, |scope| {
+            // inner to outer
+            all_locals.extend(get_scope_locals(scope, offset, vars));
+
+            if scope.kind == ScopeKind::Callable {
+                // Since local callables are not closures, hide local variables in parent scopes.
+                vars = false;
+            }
+        });
+
+        // deduping by name will effectively make locals in a child scope
+        // shadow the locals in its parent scopes
+        all_locals.dedup_by(|a, b| a.name == b.name);
+
+        all_locals
+    }
+
+    fn for_each_scope_at_offset<F>(&self, offset: u32, mut f: F)
+    where
+        F: FnMut(&Scope),
+    {
+        // reverse to go from innermost -> outermost
+        self.scopes.iter().rev().for_each(|scope| {
+            // the block span includes the delimiters (e.g. the braces)
+            if scope.span.lo < offset && scope.span.hi > offset {
+                f(scope);
+            }
+        });
+    }
+}
+
+#[derive(Debug)]
+pub struct Local {
+    pub name: Rc<str>,
+    pub kind: LocalKind,
+}
+
+#[derive(Debug)]
+pub enum LocalKind {
+    /// A local callable or UDT.
+    Item(ItemId),
+    /// A type parameter.
+    TyParam(ParamId),
+    /// A local variable or parameter.
+    Var(NodeId),
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GlobalScope {
     tys: FxHashMap<Rc<str>, FxHashMap<Rc<str>, Res>>,
     terms: FxHashMap<Rc<str>, FxHashMap<Rc<str>, Res>>,
     namespaces: FxHashSet<Rc<str>>,
+    intrinsics: FxHashSet<Rc<str>>,
 }
 
 impl GlobalScope {
@@ -141,7 +254,7 @@ impl GlobalScope {
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 enum ScopeKind {
     Namespace(Rc<str>),
     Callable,
@@ -154,6 +267,7 @@ enum NameKind {
     Term,
 }
 
+#[derive(Debug, Clone)]
 struct Open {
     namespace: Rc<str>,
     span: Span,
@@ -163,8 +277,9 @@ pub(super) struct Resolver {
     names: Names,
     dropped_names: Vec<TrackedName>,
     curr_params: Option<FxHashSet<Rc<str>>>,
+    curr_scope_chain: Vec<ScopeId>,
     globals: GlobalScope,
-    scopes: Vec<Scope>,
+    locals: Locals,
     errors: Vec<Error>,
 }
 
@@ -175,7 +290,8 @@ impl Resolver {
             dropped_names,
             curr_params: None,
             globals: globals.scope,
-            scopes: Vec::new(),
+            locals: Locals::default(),
+            curr_scope_chain: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -184,18 +300,31 @@ impl Resolver {
         globals: GlobalTable,
         dropped_names: Vec<TrackedName>,
     ) -> Self {
+        let mut locals = Locals::default();
+        let scope_id = locals.push_scope(Scope::new(
+            ScopeKind::Block,
+            Span {
+                lo: 0,
+                hi: u32::MAX,
+            },
+        ));
         Self {
             names: globals.names,
             dropped_names,
             curr_params: None,
             globals: globals.scope,
-            scopes: vec![Scope::new(ScopeKind::Block)],
+            locals,
+            curr_scope_chain: vec![scope_id],
             errors: Vec::new(),
         }
     }
 
     pub(super) fn names(&self) -> &Names {
         &self.names
+    }
+
+    pub(super) fn locals(&self) -> &Locals {
+        &self.locals
     }
 
     pub(super) fn drain_errors(&mut self) -> vec::Drain<Error> {
@@ -209,15 +338,15 @@ impl Resolver {
         }
     }
 
-    pub(super) fn into_names(self) -> (Names, Vec<Error>) {
-        (self.names, self.errors)
+    pub(super) fn into_result(self) -> (Names, Locals, Vec<Error>) {
+        (self.names, self.locals, self.errors)
     }
 
     pub(super) fn extend_dropped_names(&mut self, dropped_names: Vec<TrackedName>) {
         self.dropped_names.extend(dropped_names);
     }
 
-    pub(super) fn bind_fragments(&mut self, ast: &mut ast::Package, assigner: &mut Assigner) {
+    pub(super) fn bind_fragments(&mut self, ast: &ast::Package, assigner: &mut Assigner) {
         for node in &mut ast.nodes.iter() {
             match node {
                 ast::TopLevelNode::Namespace(namespace) => {
@@ -238,10 +367,26 @@ impl Resolver {
         }
     }
 
+    fn check_item_status(&mut self, res: Res, name: String, span: Span) {
+        if let Res::Item(_, ItemStatus::Unimplemented) = res {
+            self.errors.push(Error::Unimplemented(name, span));
+        }
+    }
+
     fn resolve_ident(&mut self, kind: NameKind, name: &Ident) {
         let namespace = None;
-        match resolve(kind, &self.globals, &self.scopes, name, &namespace) {
-            Ok(id) => self.names.insert(name.id, id),
+
+        match resolve(
+            kind,
+            &self.globals,
+            self.locals.get_scopes(&self.curr_scope_chain),
+            name,
+            &namespace,
+        ) {
+            Ok(res) => {
+                self.check_item_status(res, name.name.to_string(), name.span);
+                self.names.insert(name.id, res);
+            }
             Err(err) => self.errors.push(err),
         }
     }
@@ -249,8 +394,18 @@ impl Resolver {
     fn resolve_path(&mut self, kind: NameKind, path: &ast::Path) {
         let name = &path.name;
         let namespace = &path.namespace;
-        match resolve(kind, &self.globals, &self.scopes, name, namespace) {
-            Ok(id) => self.names.insert(path.id, id),
+
+        match resolve(
+            kind,
+            &self.globals,
+            self.locals.get_scopes(&self.curr_scope_chain),
+            name,
+            namespace,
+        ) {
+            Ok(res) => {
+                self.check_item_status(res, path.name.name.to_string(), path.span);
+                self.names.insert(path.id, res);
+            }
             Err(err) => {
                 if let Error::NotFound(name, span) = err {
                     if let Some(dropped_name) =
@@ -271,38 +426,54 @@ impl Resolver {
         }
     }
 
-    fn bind_pat(&mut self, pat: &ast::Pat) {
+    /// # Arguments
+    ///
+    /// * `pat` - The pattern to bind.
+    /// * `valid_at` - The offset at which the name becomes defined. This is used to determine
+    ///   whether a name is in scope at a given offset.
+    ///   e.g. For a local variable, this would be immediately after the declaration statement.
+    ///   For input parameters to a callable, this would be the start of the body block.
+    fn bind_pat(&mut self, pat: &ast::Pat, valid_at: u32) {
         let mut bindings = FxHashSet::default();
-        self.bind_pat_recursive(pat, &mut bindings);
+        self.bind_pat_recursive(pat, valid_at, &mut bindings);
     }
 
-    fn bind_pat_recursive(&mut self, pat: &ast::Pat, bindings: &mut FxHashSet<Rc<str>>) {
+    fn bind_pat_recursive(
+        &mut self,
+        pat: &ast::Pat,
+        valid_at: u32,
+        bindings: &mut FxHashSet<Rc<str>>,
+    ) {
         match &*pat.kind {
             ast::PatKind::Bind(name, _) => {
                 if !bindings.insert(Rc::clone(&name.name)) {
                     self.errors
                         .push(Error::DuplicateBinding(name.name.to_string(), name.span));
                 }
-                let scope = self.scopes.last_mut().expect("binding should have scope");
                 self.names.insert(name.id, Res::Local(name.id));
-                scope.vars.insert(Rc::clone(&name.name), name.id);
+                self.current_scope_mut()
+                    .vars
+                    .insert(Rc::clone(&name.name), (valid_at, name.id));
             }
-            ast::PatKind::Discard(_) | ast::PatKind::Elided => {}
-            ast::PatKind::Paren(pat) => self.bind_pat_recursive(pat, bindings),
+            ast::PatKind::Discard(_) | ast::PatKind::Elided | ast::PatKind::Err => {}
+            ast::PatKind::Paren(pat) => self.bind_pat_recursive(pat, valid_at, bindings),
             ast::PatKind::Tuple(pats) => pats
                 .iter()
-                .for_each(|p| self.bind_pat_recursive(p, bindings)),
+                .for_each(|p| self.bind_pat_recursive(p, valid_at, bindings)),
         }
     }
 
     fn bind_open(&mut self, name: &ast::Ident, alias: &Option<Box<ast::Ident>>) {
         let alias = alias.as_ref().map_or("".into(), |a| Rc::clone(&a.name));
-        let scope = self.scopes.last_mut().expect("open item should have scope");
         if self.globals.namespaces.contains(&name.name) {
-            scope.opens.entry(alias).or_default().push(Open {
-                namespace: Rc::clone(&name.name),
-                span: name.span,
-            });
+            self.current_scope_mut()
+                .opens
+                .entry(alias)
+                .or_default()
+                .push(Open {
+                    namespace: Rc::clone(&name.name),
+                    span: name.span,
+                });
         } else {
             self.errors
                 .push(Error::NotFound(name.name.to_string(), name.span));
@@ -314,14 +485,27 @@ impl Resolver {
             ast::ItemKind::Open(name, alias) => self.bind_open(name, alias),
             ast::ItemKind::Callable(decl) => {
                 let id = intrapackage(assigner.next_item());
-                self.names.insert(decl.name.id, Res::Item(id));
-                let scope = self.scopes.last_mut().expect("binding should have scope");
-                scope.terms.insert(Rc::clone(&decl.name.name), id);
+                self.names.insert(
+                    decl.name.id,
+                    Res::Item(
+                        id,
+                        ItemStatus::from_attrs(&ast_attrs_as_hir_attrs(&item.attrs)),
+                    ),
+                );
+                self.current_scope_mut()
+                    .terms
+                    .insert(Rc::clone(&decl.name.name), id);
             }
             ast::ItemKind::Ty(name, _) => {
                 let id = intrapackage(assigner.next_item());
-                self.names.insert(name.id, Res::Item(id));
-                let scope = self.scopes.last_mut().expect("binding should have scope");
+                self.names.insert(
+                    name.id,
+                    Res::Item(
+                        id,
+                        ItemStatus::from_attrs(&ast_attrs_as_hir_attrs(&item.attrs)),
+                    ),
+                );
+                let scope = self.current_scope_mut();
                 scope.tys.insert(Rc::clone(&name.name), id);
                 scope.terms.insert(Rc::clone(&name.name), id);
             }
@@ -331,46 +515,77 @@ impl Resolver {
 
     fn bind_type_parameters(&mut self, decl: &CallableDecl) {
         decl.generics.iter().enumerate().for_each(|(ix, ident)| {
-            let scope = self
-                .scopes
-                .last_mut()
-                .expect("type parameters should have scope");
-            scope.ty_vars.insert(Rc::clone(&ident.name), ix.into());
+            self.current_scope_mut()
+                .ty_vars
+                .insert(Rc::clone(&ident.name), ix.into());
             self.names.insert(ident.id, Res::Param(ix.into()));
         });
     }
+
+    fn push_scope(&mut self, span: Span, kind: ScopeKind) {
+        let scope_id = self.locals.push_scope(Scope::new(kind, span));
+        self.curr_scope_chain.push(scope_id);
+    }
+
+    fn pop_scope(&mut self) {
+        self.curr_scope_chain
+            .pop()
+            .expect("pushed scope should be the last element on the stack");
+    }
+
+    /// Returns the innermost scope in the current scope chain.
+    fn current_scope_mut(&mut self) -> &mut Scope {
+        let scope_id = *self
+            .curr_scope_chain
+            .last()
+            .expect("there should be at least one scope at location");
+
+        self.locals.get_scope_mut(scope_id)
+    }
 }
 
+/// Constructed from a [Resolver] and an [Assigner], this structure implements `Visitor`
+/// on the package AST where it resolves identifiers, and assigns IDs to them.
 pub(super) struct With<'a> {
     resolver: &'a mut Resolver,
     assigner: &'a mut Assigner,
 }
 
 impl With<'_> {
-    fn with_scope(&mut self, kind: ScopeKind, f: impl FnOnce(&mut Self)) {
-        self.resolver.scopes.push(Scope::new(kind));
+    /// Given a function, apply that function to `Self` within a scope. In other words, this
+    /// function automatically pushes a scope before `f` and pops it after.
+    fn with_scope(&mut self, span: Span, kind: ScopeKind, f: impl FnOnce(&mut Self)) {
+        self.resolver.push_scope(span, kind);
         f(self);
-        self.resolver
-            .scopes
-            .pop()
-            .expect("pushed scope should be the last element on the stack");
+        self.resolver.pop_scope();
     }
 
-    fn with_pat(&mut self, kind: ScopeKind, pat: &ast::Pat, f: impl FnOnce(&mut Self)) {
-        self.with_scope(kind, |visitor| {
-            visitor.resolver.bind_pat(pat);
+    /// Apply `f` to self while a pattern's constituent identifiers are in scope. Removes those
+    /// identifiers from the scope after `f`.
+    fn with_pat(&mut self, span: Span, kind: ScopeKind, pat: &ast::Pat, f: impl FnOnce(&mut Self)) {
+        self.with_scope(span, kind, |visitor| {
+            // The bindings are valid from the beginning of the scope
+            visitor.resolver.bind_pat(pat, span.lo);
             f(visitor);
         });
     }
 
-    fn with_spec_pat(&mut self, kind: ScopeKind, pat: &ast::Pat, f: impl FnOnce(&mut Self)) {
+    fn with_spec_pat(
+        &mut self,
+        span: Span,
+        kind: ScopeKind,
+        pat: &ast::Pat,
+        f: impl FnOnce(&mut Self),
+    ) {
         let mut bindings = self
             .resolver
             .curr_params
             .as_ref()
             .map_or_else(FxHashSet::default, std::clone::Clone::clone);
-        self.with_scope(kind, |visitor| {
-            visitor.resolver.bind_pat_recursive(pat, &mut bindings);
+        self.with_scope(span, kind, |visitor| {
+            visitor
+                .resolver
+                .bind_pat_recursive(pat, span.lo, &mut bindings);
             f(visitor);
         });
     }
@@ -379,7 +594,7 @@ impl With<'_> {
 impl AstVisitor<'_> for With<'_> {
     fn visit_namespace(&mut self, namespace: &ast::Namespace) {
         let kind = ScopeKind::Namespace(Rc::clone(&namespace.name.name));
-        self.with_scope(kind, |visitor| {
+        self.with_scope(namespace.span, kind, |visitor| {
             for item in &*namespace.items {
                 if let ast::ItemKind::Open(name, alias) = &*item.kind {
                     visitor.resolver.bind_open(name, alias);
@@ -390,8 +605,12 @@ impl AstVisitor<'_> for With<'_> {
         });
     }
 
-    // We do not perform name resolution on attributes, as those are checking during lowering.
-    fn visit_attr(&mut self, _: &ast::Attr) {}
+    fn visit_attr(&mut self, attr: &ast::Attr) {
+        // The Config attribute arguments do not go through name resolution.
+        if hir::Attr::from_str(attr.name.name.as_ref()) != Ok(hir::Attr::Config) {
+            walk_attr(self, attr);
+        }
+    }
 
     fn visit_callable_decl(&mut self, decl: &ast::CallableDecl) {
         fn collect_param_names(pat: &ast::Pat, names: &mut FxHashSet<Rc<str>>) {
@@ -399,7 +618,7 @@ impl AstVisitor<'_> for With<'_> {
                 ast::PatKind::Bind(name, _) => {
                     names.insert(Rc::clone(&name.name));
                 }
-                ast::PatKind::Discard(_) | ast::PatKind::Elided => {}
+                ast::PatKind::Discard(_) | ast::PatKind::Elided | ast::PatKind::Err => {}
                 ast::PatKind::Paren(pat) => collect_param_names(pat, names),
                 ast::PatKind::Tuple(pats) => {
                     pats.iter().for_each(|p| collect_param_names(p, names));
@@ -409,9 +628,11 @@ impl AstVisitor<'_> for With<'_> {
         let mut param_names = FxHashSet::default();
         collect_param_names(&decl.input, &mut param_names);
         let prev_param_names = self.resolver.curr_params.replace(param_names);
-        self.with_scope(ScopeKind::Callable, |visitor| {
+        self.with_scope(decl.span, ScopeKind::Callable, |visitor| {
             visitor.resolver.bind_type_parameters(decl);
-            visitor.resolver.bind_pat(&decl.input);
+            // The parameter bindings are valid after the end of the input pattern.
+            // (More accurately, in the callable body, but we don't have a start offset for that).
+            visitor.resolver.bind_pat(&decl.input, decl.input.span.hi);
             ast_visit::walk_callable_decl(visitor, decl);
         });
         self.resolver.curr_params = prev_param_names;
@@ -419,7 +640,7 @@ impl AstVisitor<'_> for With<'_> {
 
     fn visit_spec_decl(&mut self, decl: &ast::SpecDecl) {
         if let ast::SpecBody::Impl(input, block) = &decl.body {
-            self.with_spec_pat(ScopeKind::Block, input, |visitor| {
+            self.with_spec_pat(block.span, ScopeKind::Block, input, |visitor| {
                 visitor.visit_block(block);
             });
         } else {
@@ -440,7 +661,7 @@ impl AstVisitor<'_> for With<'_> {
     }
 
     fn visit_block(&mut self, block: &ast::Block) {
-        self.with_scope(ScopeKind::Block, |visitor| {
+        self.with_scope(block.span, ScopeKind::Block, |visitor| {
             for stmt in &*block.stmts {
                 if let ast::StmtKind::Item(item) = &*stmt.kind {
                     visitor.resolver.bind_local_item(visitor.assigner, item);
@@ -456,13 +677,18 @@ impl AstVisitor<'_> for With<'_> {
             ast::StmtKind::Item(item) => self.visit_item(item),
             ast::StmtKind::Local(_, pat, _) => {
                 ast_visit::walk_stmt(self, stmt);
-                self.resolver.bind_pat(pat);
+                // The binding is valid after end of the statement.
+                self.resolver.bind_pat(pat, stmt.span.hi);
             }
             ast::StmtKind::Qubit(_, pat, init, block) => {
                 ast_visit::walk_qubit_init(self, init);
-                self.resolver.bind_pat(pat);
                 if let Some(block) = block {
-                    self.visit_block(block);
+                    self.with_pat(block.span, ScopeKind::Block, pat, |visitor| {
+                        visitor.visit_block(block);
+                    });
+                } else {
+                    // The binding is valid after end of the statement.
+                    self.resolver.bind_pat(pat, stmt.span.hi);
                 }
             }
             ast::StmtKind::Empty
@@ -478,10 +704,12 @@ impl AstVisitor<'_> for With<'_> {
         match &*expr.kind {
             ast::ExprKind::For(pat, iter, block) => {
                 self.visit_expr(iter);
-                self.with_pat(ScopeKind::Block, pat, |visitor| visitor.visit_block(block));
+                self.with_pat(block.span, ScopeKind::Block, pat, |visitor| {
+                    visitor.visit_block(block);
+                });
             }
             ast::ExprKind::Lambda(_, input, output) => {
-                self.with_pat(ScopeKind::Block, input, |visitor| {
+                self.with_pat(output.span, ScopeKind::Block, input, |visitor| {
                     visitor.visit_expr(output);
                 });
             }
@@ -489,7 +717,13 @@ impl AstVisitor<'_> for With<'_> {
             ast::ExprKind::TernOp(ast::TernOp::Update, container, index, replace)
             | ast::ExprKind::AssignUpdate(container, index, replace) => {
                 self.visit_expr(container);
-                if !is_field_update(&self.resolver.globals, &self.resolver.scopes, index) {
+                if !is_field_update(
+                    &self.resolver.globals,
+                    self.resolver
+                        .locals
+                        .get_scopes(&self.resolver.curr_scope_chain),
+                    index,
+                ) {
                     self.visit_expr(index);
                 }
                 self.visit_expr(replace);
@@ -531,6 +765,7 @@ impl GlobalTable {
                 tys,
                 terms: FxHashMap::default(),
                 namespaces: FxHashSet::default(),
+                intrinsics: FxHashSet::default(),
             },
         }
     }
@@ -561,27 +796,34 @@ impl GlobalTable {
     }
 
     pub(super) fn add_external_package(&mut self, id: PackageId, package: &hir::Package) {
-        for global in global::iter_package(Some(id), package)
-            .filter(|global| global.visibility == hir::Visibility::Public)
-        {
-            match global.kind {
-                global::Kind::Ty(ty) => {
+        for global in global::iter_package(Some(id), package).filter(|global| {
+            global.visibility == hir::Visibility::Public
+                || matches!(&global.kind, global::Kind::Term(t) if t.intrinsic)
+        }) {
+            match (global.kind, global.visibility) {
+                (global::Kind::Ty(ty), hir::Visibility::Public) => {
                     self.scope
                         .tys
                         .entry(global.namespace)
                         .or_default()
-                        .insert(global.name, Res::Item(ty.id));
+                        .insert(global.name, Res::Item(ty.id, global.status));
                 }
-                global::Kind::Term(term) => {
-                    self.scope
-                        .terms
-                        .entry(global.namespace)
-                        .or_default()
-                        .insert(global.name, Res::Item(term.id));
+                (global::Kind::Term(term), visibility) => {
+                    if visibility == hir::Visibility::Public {
+                        self.scope
+                            .terms
+                            .entry(global.namespace)
+                            .or_default()
+                            .insert(global.name.clone(), Res::Item(term.id, global.status));
+                    }
+                    if term.intrinsic {
+                        self.scope.intrinsics.insert(global.name);
+                    }
                 }
-                global::Kind::Namespace => {
+                (global::Kind::Namespace, hir::Visibility::Public) => {
                     self.scope.namespaces.insert(global.name);
                 }
+                (_, hir::Visibility::Internal) => {}
             }
         }
     }
@@ -596,7 +838,7 @@ fn bind_global_items(
 ) {
     names.insert(
         namespace.name.id,
-        Res::Item(intrapackage(assigner.next_item())),
+        Res::Item(intrapackage(assigner.next_item()), ItemStatus::Available),
     );
     scope.namespaces.insert(Rc::clone(&namespace.name.name));
 
@@ -609,7 +851,7 @@ fn bind_global_items(
             item,
         ) {
             Ok(()) => {}
-            Err(error) => errors.push(error),
+            Err(mut e) => errors.append(&mut e),
         }
     }
 }
@@ -629,7 +871,11 @@ pub(super) fn extract_field_name<'a>(names: &Names, expr: &'a ast::Expr) -> Opti
     }
 }
 
-fn is_field_update(globals: &GlobalScope, scopes: &[Scope], index: &ast::Expr) -> bool {
+fn is_field_update<'a>(
+    globals: &GlobalScope,
+    scopes: impl Iterator<Item = &'a Scope>,
+    index: &ast::Expr,
+) -> bool {
     // Disambiguate the update operator by looking at the index expression. If it's an
     // unqualified path that doesn't resolve to a local, assume that it's meant to be a field name.
     match &*index.kind {
@@ -645,36 +891,60 @@ fn is_field_update(globals: &GlobalScope, scopes: &[Scope], index: &ast::Expr) -
     }
 }
 
+fn ast_attrs_as_hir_attrs(attrs: &[Box<ast::Attr>]) -> Vec<hir::Attr> {
+    attrs
+        .iter()
+        .filter_map(|attr| hir::Attr::from_str(attr.name.name.as_ref()).ok())
+        .collect()
+}
+
 fn bind_global_item(
     names: &mut Names,
     scope: &mut GlobalScope,
     namespace: &Rc<str>,
     next_id: impl FnOnce() -> ItemId,
     item: &ast::Item,
-) -> Result<(), Error> {
+) -> Result<(), Vec<Error>> {
     match &*item.kind {
         ast::ItemKind::Callable(decl) => {
-            let res = Res::Item(next_id());
+            let item_id = next_id();
+            let status = ItemStatus::from_attrs(&ast_attrs_as_hir_attrs(item.attrs.as_ref()));
+            let res = Res::Item(item_id, status);
             names.insert(decl.name.id, res);
+            let mut errors = Vec::new();
             match scope
                 .terms
                 .entry(Rc::clone(namespace))
                 .or_default()
                 .entry(Rc::clone(&decl.name.name))
             {
-                Entry::Occupied(_) => Err(Error::Duplicate(
+                Entry::Occupied(_) => errors.push(Error::Duplicate(
                     decl.name.name.to_string(),
                     namespace.to_string(),
                     decl.name.span,
                 )),
                 Entry::Vacant(entry) => {
                     entry.insert(res);
-                    Ok(())
                 }
+            }
+
+            if decl_is_intrinsic(decl) && !scope.intrinsics.insert(Rc::clone(&decl.name.name)) {
+                errors.push(Error::DuplicateIntrinsic(
+                    decl.name.name.to_string(),
+                    decl.name.span,
+                ));
+            }
+
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors)
             }
         }
         ast::ItemKind::Ty(name, _) => {
-            let res = Res::Item(next_id());
+            let item_id = next_id();
+            let status = ItemStatus::from_attrs(&ast_attrs_as_hir_attrs(item.attrs.as_ref()));
+            let res = Res::Item(item_id, status);
             names.insert(name.id, res);
             match (
                 scope
@@ -688,11 +958,11 @@ fn bind_global_item(
                     .or_default()
                     .entry(Rc::clone(&name.name)),
             ) {
-                (Entry::Occupied(_), _) | (_, Entry::Occupied(_)) => Err(Error::Duplicate(
+                (Entry::Occupied(_), _) | (_, Entry::Occupied(_)) => Err(vec![Error::Duplicate(
                     name.name.to_string(),
                     namespace.to_string(),
                     name.span,
-                )),
+                )]),
                 (Entry::Vacant(term_entry), Entry::Vacant(ty_entry)) => {
                     term_entry.insert(res);
                     ty_entry.insert(res);
@@ -704,18 +974,29 @@ fn bind_global_item(
     }
 }
 
-fn resolve(
+fn decl_is_intrinsic(decl: &ast::CallableDecl) -> bool {
+    if let CallableBody::Specs(specs) = decl.body.as_ref() {
+        specs
+            .iter()
+            .any(|spec| matches!(spec.body, SpecBody::Gen(SpecGen::Intrinsic)))
+    } else {
+        false
+    }
+}
+
+fn resolve<'a>(
     kind: NameKind,
     globals: &GlobalScope,
-    locals: &[Scope],
+    scopes: impl Iterator<Item = &'a Scope>,
     name: &Ident,
     namespace: &Option<Box<Ident>>,
 ) -> Result<Res, Error> {
+    let scopes = scopes.collect::<Vec<_>>();
     let mut candidates = FxHashMap::default();
     let mut vars = true;
     let name_str = &(*name.name);
     let namespace = namespace.as_ref().map_or("", |i| &i.name);
-    for scope in locals.iter().rev() {
+    for scope in scopes {
         if namespace.is_empty() {
             if let Some(res) = resolve_scope_locals(kind, globals, scope, vars, name_str) {
                 // Local declarations shadow everything.
@@ -772,6 +1053,21 @@ fn resolve(
     }
 
     if candidates.len() > 1 {
+        // If there are multiple candidates, remove unimplemented items. This allows resolution to
+        // succeed in cases where both an older, unimplemented API and newer, implemented API with the
+        // same name are both in scope without forcing the user to fully qualify the name.
+        let mut removals = Vec::new();
+        for res in candidates.keys() {
+            if let Res::Item(_, ItemStatus::Unimplemented) = res {
+                removals.push(*res);
+            }
+        }
+        for res in removals {
+            candidates.remove(&res);
+        }
+    }
+
+    if candidates.len() > 1 {
         let mut opens: Vec<_> = candidates.into_values().collect();
         opens.sort_unstable_by_key(|open| open.span);
         Err(Error::Ambiguous {
@@ -789,7 +1085,7 @@ fn resolve(
 }
 
 /// Implements shadowing rules within a single scope.
-/// A local variable always wins out against an item with the same name, if they're declared in
+/// A local variable always wins out against an item with the same name, even if they're declared in
 /// the same scope. It is implemented in a way that resembles Rust:
 /// ```rust
 /// let foo = || 1;
@@ -806,7 +1102,7 @@ fn resolve_scope_locals(
     if vars {
         match kind {
             NameKind::Term => {
-                if let Some(&id) = scope.vars.get(name) {
+                if let Some(&(_, id)) = scope.vars.get(name) {
                     return Some(Res::Local(id));
                 }
             }
@@ -819,7 +1115,7 @@ fn resolve_scope_locals(
     }
 
     if let Some(&id) = scope.item(kind, name) {
-        return Some(Res::Item(id));
+        return Some(Res::Item(id, ItemStatus::Available));
     }
 
     if let ScopeKind::Namespace(namespace) = &scope.kind {
@@ -830,6 +1126,42 @@ fn resolve_scope_locals(
 
     None
 }
+
+fn get_scope_locals(scope: &Scope, offset: u32, vars: bool) -> Vec<Local> {
+    let mut names = Vec::new();
+
+    // variables
+    if vars {
+        names.extend(scope.vars.iter().filter_map(|(name, (valid_at, id))| {
+            // Bug: Because we keep track of only one `valid_at` offset per name,
+            // when a variable is later shadowed in the same scope,
+            // it is missed in the list. https://github.com/microsoft/qsharp/issues/897
+            if offset >= *valid_at {
+                Some(Local {
+                    name: name.clone(),
+                    kind: LocalKind::Var(*id),
+                })
+            } else {
+                None
+            }
+        }));
+
+        names.extend(scope.ty_vars.iter().map(|id| Local {
+            name: id.0.clone(),
+            kind: LocalKind::TyParam(*id.1),
+        }));
+    }
+
+    // items
+    // skip adding newtypes since they're already in the terms map
+    names.extend(scope.terms.iter().map(|term| Local {
+        name: term.0.clone(),
+        kind: LocalKind::Item(*term.1),
+    }));
+
+    names
+}
+
 /// The return type represents the resolution of implicit opens, but also
 /// retains the namespace that the resolution comes from.
 /// This retained namespace string is used for error reporting.

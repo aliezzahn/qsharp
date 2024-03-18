@@ -4,32 +4,33 @@
 #[cfg(test)]
 mod tests;
 
-use std::iter::zip;
-
+use crate::{
+    compilation::Compilation,
+    protocol::{ParameterInformation, SignatureHelp, SignatureInformation},
+    qsc_utils::{span_contains, span_touches},
+    Encoding,
+};
 use qsc::{
     ast::{
         self,
         visit::{walk_expr, walk_item, Visitor},
     },
-    hir, resolve,
+    display::{parse_doc_for_param, parse_doc_for_summary, CodeDisplay, Lookup},
+    hir,
+    line_column::{Position, Range},
+    resolve, Span,
 };
-
-use crate::{
-    display::{parse_doc_for_param, parse_doc_for_summary, CodeDisplay},
-    protocol::{ParameterInformation, SignatureHelp, SignatureInformation, Span},
-    qsc_utils::{
-        map_offset, resolve_item_relative_to_user_package, span_contains, span_touches, Compilation,
-    },
-};
+use std::iter::zip;
 
 pub(crate) fn get_signature_help(
     compilation: &Compilation,
     source_name: &str,
-    offset: u32,
+    position: Position,
+    position_encoding: Encoding,
 ) -> Option<SignatureHelp> {
-    // Map the file offset into a SourceMap offset
-    let offset = map_offset(&compilation.user_unit.sources, source_name, offset);
-    let package = &compilation.user_unit.ast.package;
+    let offset =
+        compilation.source_position_to_package_offset(source_name, position, position_encoding);
+    let user_ast_package = &compilation.user_unit().ast.package;
 
     let mut finder = SignatureHelpFinder {
         compilation,
@@ -38,7 +39,30 @@ pub(crate) fn get_signature_help(
         display: CodeDisplay { compilation },
     };
 
-    finder.visit_package(package);
+    finder.visit_package(user_ast_package);
+
+    if position_encoding == Encoding::Utf16 {
+        // Fix up parameter offsets to be utf-16 based.
+        if let Some(ref mut sig_help) = finder.signature_help {
+            for sig in &mut sig_help.signatures {
+                for param in &mut sig.parameters {
+                    let range = Range::from_span(
+                        position_encoding,
+                        &sig.label,
+                        &Span {
+                            lo: param.label.0,
+                            hi: param.label.1,
+                        },
+                    );
+                    assert!(
+                        range.start.line == 0 && range.end.line == 0,
+                        "generated signature help should not have line breaks"
+                    );
+                    param.label = (range.start.column, range.end.column);
+                }
+            }
+        }
+    }
 
     finder.signature_help
 }
@@ -65,8 +89,8 @@ impl<'a> Visitor<'a> for SignatureHelpFinder<'a> {
                     if self.signature_help.is_none() {
                         let callee = unwrap_parens(callee);
                         match try_get_direct_callee(self.compilation, callee) {
-                            Some((package_id, callee_decl, item_doc)) => {
-                                self.process_direct_callee(package_id, callee_decl, item_doc, args);
+                            Some((_, callee_decl, item_doc)) => {
+                                self.process_direct_callee(callee_decl, item_doc, args);
                             }
                             None => self.process_indirect_callee(callee, args),
                         }
@@ -80,12 +104,12 @@ impl<'a> Visitor<'a> for SignatureHelpFinder<'a> {
 
 impl SignatureHelpFinder<'_> {
     fn process_indirect_callee(&mut self, callee: &ast::Expr, args: &ast::Expr) {
-        if let Some(ty) = self.compilation.user_unit.ast.tys.terms.get(callee.id) {
+        if let Some(ty) = self.compilation.get_ty(callee.id) {
             if let hir::ty::Ty::Arrow(arrow) = &ty {
                 let sig_info = SignatureInformation {
-                    label: self.display.hir_ty(None, ty).to_string(),
+                    label: ty.display(),
                     documentation: None,
-                    parameters: self.get_type_params(None, &arrow.input),
+                    parameters: get_type_params(&arrow.input),
                 };
 
                 // Capture arrow.input structure in a fake HIR Pat.
@@ -102,7 +126,6 @@ impl SignatureHelpFinder<'_> {
 
     fn process_direct_callee(
         &mut self,
-        package_id: Option<hir::PackageId>,
         callee_decl: &hir::CallableDecl,
         item_doc: &str,
         args: &ast::Expr,
@@ -111,12 +134,9 @@ impl SignatureHelpFinder<'_> {
         let documentation = (!documentation.is_empty()).then_some(documentation);
 
         let sig_info = SignatureInformation {
-            label: self
-                .display
-                .hir_callable_decl(package_id, callee_decl)
-                .to_string(),
+            label: self.display.hir_callable_decl(callee_decl).to_string(),
             documentation,
-            parameters: self.get_params(package_id, callee_decl, item_doc),
+            parameters: self.get_params(callee_decl, item_doc),
         };
 
         self.signature_help = Some(SignatureHelp {
@@ -136,21 +156,14 @@ impl SignatureHelpFinder<'_> {
     ///              └─────────┬───────────┘
     ///                      param 0
     /// ```
-    fn get_params(
-        &self,
-        package_id: Option<hir::PackageId>,
-        decl: &hir::CallableDecl,
-        doc: &str,
-    ) -> Vec<ParameterInformation> {
-        let mut offset = self.display.get_param_offset(package_id, decl);
+    fn get_params(&self, decl: &hir::CallableDecl, doc: &str) -> Vec<ParameterInformation> {
+        let mut offset = self.display.get_param_offset(decl);
 
         match &decl.input.kind {
-            hir::PatKind::Discard | hir::PatKind::Bind(_) => {
-                self.make_wrapped_params(offset, package_id, &decl.input, doc)
+            hir::PatKind::Discard | hir::PatKind::Err | hir::PatKind::Bind(_) => {
+                self.make_wrapped_params(offset, &decl.input, doc)
             }
-            hir::PatKind::Tuple(_) => {
-                self.make_param_with_offset(&mut offset, package_id, &decl.input, doc)
-            }
+            hir::PatKind::Tuple(_) => self.make_param_with_offset(&mut offset, &decl.input, doc),
         }
     }
 
@@ -159,7 +172,6 @@ impl SignatureHelpFinder<'_> {
     fn make_wrapped_params(
         &self,
         offset: u32,
-        package_id: Option<hir::PackageId>,
         pat: &hir::Pat,
         doc: &str,
     ) -> Vec<ParameterInformation> {
@@ -170,20 +182,14 @@ impl SignatureHelpFinder<'_> {
             None
         };
 
-        let len = usize_to_u32(self.display.hir_pat(package_id, pat).to_string().len());
+        let len = usize_to_u32(self.display.hir_pat(pat).to_string().len());
         let param = ParameterInformation {
-            label: Span {
-                start: offset + 1,
-                end: offset + len + 1,
-            },
+            label: (offset + 1, offset + len + 1),
             documentation,
         };
 
         let wrapper = ParameterInformation {
-            label: Span {
-                start: offset,
-                end: offset + len + 2,
-            },
+            label: (offset, offset + len + 2),
             documentation: None,
         };
 
@@ -193,12 +199,11 @@ impl SignatureHelpFinder<'_> {
     fn make_param_with_offset(
         &self,
         offset: &mut u32,
-        package_id: Option<hir::PackageId>,
         pat: &hir::Pat,
         doc: &str,
     ) -> Vec<ParameterInformation> {
         match &pat.kind {
-            hir::PatKind::Bind(_) | hir::PatKind::Discard => {
+            hir::PatKind::Bind(_) | hir::PatKind::Discard | hir::PatKind::Err => {
                 let documentation = if let hir::PatKind::Bind(name) = &pat.kind {
                     let documentation = parse_doc_for_param(doc, &name.name);
                     (!documentation.is_empty()).then_some(documentation)
@@ -206,24 +211,18 @@ impl SignatureHelpFinder<'_> {
                     None
                 };
 
-                let len = usize_to_u32(self.display.hir_pat(package_id, pat).to_string().len());
+                let len = usize_to_u32(self.display.hir_pat(pat).to_string().len());
                 let start = *offset;
                 *offset += len;
                 vec![ParameterInformation {
-                    label: Span {
-                        start,
-                        end: *offset,
-                    },
+                    label: (start, *offset),
                     documentation,
                 }]
             }
             hir::PatKind::Tuple(items) => {
-                let len = usize_to_u32(self.display.hir_pat(package_id, pat).to_string().len());
+                let len = usize_to_u32(self.display.hir_pat(pat).to_string().len());
                 let mut rtrn = vec![ParameterInformation {
-                    label: Span {
-                        start: *offset,
-                        end: *offset + len,
-                    },
+                    label: (*offset, *offset + len),
                     documentation: None,
                 }];
                 *offset += 1; // for the open parenthesis
@@ -234,95 +233,75 @@ impl SignatureHelpFinder<'_> {
                     } else {
                         *offset += 2; // 2 for the comma and space
                     }
-                    rtrn.extend(self.make_param_with_offset(offset, package_id, item, doc));
+                    rtrn.extend(self.make_param_with_offset(offset, item, doc));
                 }
                 *offset += 1; // for the close parenthesis
                 rtrn
             }
         }
     }
+}
 
-    fn get_type_params(
-        &self,
-        package_id: Option<hir::PackageId>,
-        ty: &hir::ty::Ty,
-    ) -> Vec<ParameterInformation> {
-        let mut offset = 1; // 1 for the open parenthesis character
+fn get_type_params(ty: &hir::ty::Ty) -> Vec<ParameterInformation> {
+    let mut offset = 1; // 1 for the open parenthesis character
 
-        match &ty {
-            hir::ty::Ty::Tuple(_) => self.make_type_param_with_offset(&mut offset, package_id, ty),
-            _ => self.params_for_single_type_parameter(offset, package_id, ty),
-        }
+    match &ty {
+        hir::ty::Ty::Tuple(_) => make_type_param_with_offset(&mut offset, ty),
+        _ => params_for_single_type_parameter(offset, ty),
     }
+}
 
-    /// Callables with a single parameter in their parameter list are special-cased
-    /// because we need to insert an additional parameter info to make the list
-    /// compatible with the argument processing logic.
-    fn params_for_single_type_parameter(
-        &self,
-        offset: u32,
-        package_id: Option<hir::PackageId>,
-        ty: &hir::ty::Ty,
-    ) -> Vec<ParameterInformation> {
-        let len = usize_to_u32(self.display.hir_ty(package_id, ty).to_string().len());
-        let start = offset;
-        let end = offset + len;
+/// Callables with a single parameter in their parameter list are special-cased
+/// because we need to insert an additional parameter info to make the list
+/// compatible with the argument processing logic.
+fn params_for_single_type_parameter(offset: u32, ty: &hir::ty::Ty) -> Vec<ParameterInformation> {
+    let len = usize_to_u32(ty.display().len());
+    let start = offset;
+    let end = offset + len;
 
-        let param = ParameterInformation {
-            label: Span { start, end },
+    let param = ParameterInformation {
+        label: (start, end),
+        documentation: None,
+    };
+
+    // The wrapper is a duplicate of the parameter. This is to make
+    // the generated list of parameter information objects compatible
+    // with the argument processing logic.
+    let wrapper = ParameterInformation {
+        label: (start, end),
+        documentation: None,
+    };
+
+    vec![wrapper, param]
+}
+
+fn make_type_param_with_offset(offset: &mut u32, ty: &hir::ty::Ty) -> Vec<ParameterInformation> {
+    if let hir::ty::Ty::Tuple(items) = &ty {
+        let len = usize_to_u32(ty.display().len());
+        let mut rtrn = vec![ParameterInformation {
+            label: (*offset, *offset + len),
             documentation: None,
-        };
-
-        // The wrapper is a duplicate of the parameter. This is to make
-        // the generated list of parameter information objects compatible
-        // with the argument processing logic.
-        let wrapper = ParameterInformation {
-            label: Span { start, end },
-            documentation: None,
-        };
-
-        vec![wrapper, param]
-    }
-
-    fn make_type_param_with_offset(
-        &self,
-        offset: &mut u32,
-        package_id: Option<hir::PackageId>,
-        ty: &hir::ty::Ty,
-    ) -> Vec<ParameterInformation> {
-        if let hir::ty::Ty::Tuple(items) = &ty {
-            let len = usize_to_u32(self.display.hir_ty(package_id, ty).to_string().len());
-            let mut rtrn = vec![ParameterInformation {
-                label: Span {
-                    start: *offset,
-                    end: *offset + len,
-                },
-                documentation: None,
-            }];
-            *offset += 1; // for the open parenthesis
-            let mut is_first = true;
-            for item in items {
-                if is_first {
-                    is_first = false;
-                } else {
-                    *offset += 2; // 2 for the comma and space
-                }
-                rtrn.extend(self.make_type_param_with_offset(offset, package_id, item));
+        }];
+        *offset += 1; // for the open parenthesis
+        let mut is_first = true;
+        for item in items {
+            if is_first {
+                is_first = false;
+            } else {
+                *offset += 2; // 2 for the comma and space
             }
-            *offset += 1; // for the close parenthesis
-            rtrn
-        } else {
-            let len = usize_to_u32(self.display.hir_ty(package_id, ty).to_string().len());
-            let start = *offset;
-            *offset += len;
-            vec![ParameterInformation {
-                label: Span {
-                    start,
-                    end: *offset,
-                },
-                documentation: None,
-            }]
+            rtrn.extend(make_type_param_with_offset(offset, item));
         }
+        *offset += 1; // for the close parenthesis
+        rtrn
+    } else {
+        let len = usize_to_u32(ty.display().len());
+        let start = *offset;
+        *offset += len;
+        vec![ParameterInformation {
+            label: (start, *offset),
+            documentation: None,
+        }]
     }
 }
 
@@ -342,12 +321,19 @@ fn usize_to_u32(x: usize) -> u32 {
 fn try_get_direct_callee<'a>(
     compilation: &'a Compilation,
     callee: &ast::Expr,
-) -> Option<(Option<hir::PackageId>, &'a hir::CallableDecl, &'a str)> {
+) -> Option<(hir::PackageId, &'a hir::CallableDecl, &'a str)> {
     if let ast::ExprKind::Path(path) = &*callee.kind {
-        if let Some(resolve::Res::Item(item_id)) = compilation.user_unit.ast.names.get(path.id) {
-            let (item, _, package_id) = resolve_item_relative_to_user_package(compilation, item_id);
+        if let Some(resolve::Res::Item(item_id, _)) = compilation.get_res(path.id) {
+            let (item, _, resolved_item_id) =
+                compilation.resolve_item_relative_to_user_package(item_id);
             if let hir::ItemKind::Callable(callee_decl) = &item.kind {
-                return Some((package_id, callee_decl, &item.doc));
+                return Some((
+                    resolved_item_id
+                        .package
+                        .expect("package id should be resolved"),
+                    callee_decl,
+                    &item.doc,
+                ));
             }
         }
     }
@@ -375,7 +361,7 @@ fn make_fake_pat(ty: &hir::ty::Ty) -> hir::Pat {
 fn process_args(args: &ast::Expr, location: u32, params: &hir::Pat) -> u32 {
     fn count_params(params: &hir::Pat) -> i32 {
         match &params.kind {
-            hir::PatKind::Bind(_) | hir::PatKind::Discard => 1,
+            hir::PatKind::Bind(_) | hir::PatKind::Discard | hir::PatKind::Err => 1,
             hir::PatKind::Tuple(items) => items.iter().map(count_params).sum::<i32>() + 1,
         }
     }

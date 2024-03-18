@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 import {
   JupyterFrontEnd,
   JupyterFrontEndPlugin,
@@ -68,7 +71,7 @@ function registerQSharpLanguage(
     },
     {
       token: "operatorKeyword",
-      regex: String.raw`(=)|(!)|(<)|(>)|(\\+)|(-)|(\\*)|(\\/)|(\\^)|(%)|(\\|)|(\\&\\&\\&)|(\\~\\~\\~)|(\\.\\.\\.)|(\\.\\.)|(\\?)`,
+      regex: String.raw`(=)|(!)|(<)|(>)|(\+)|(-)|(\*)|(/)|(\^)|(%)|(\|)|(&&&)|(~~~)|(\.\.\.)|(\.\.)|(\?)`,
       beginWord: false,
     },
     {

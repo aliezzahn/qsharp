@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod utils;
+
 #[cfg(test)]
 mod tests;
 
@@ -12,7 +14,8 @@ use crate::{
     Error,
 };
 use num_bigint::BigInt;
-use rand::Rng;
+use rand::{rngs::StdRng, Rng};
+use rustc_hash::FxHashSet;
 use std::array;
 
 #[allow(clippy::too_many_lines)]
@@ -22,6 +25,7 @@ pub(crate) fn call(
     arg: Value,
     arg_span: PackageSpan,
     sim: &mut dyn Backend<ResultType = impl Into<val::Result>>,
+    rng: &mut StdRng,
     out: &mut dyn Receiver,
 ) -> Result<Value, Error> {
     match name {
@@ -35,6 +39,23 @@ pub(crate) fn call(
         "DumpMachine" => {
             let (state, qubit_count) = sim.capture_quantum_state();
             match out.state(state, qubit_count) {
+                Ok(()) => Ok(Value::unit()),
+                Err(_) => Err(Error::OutputFail(name_span)),
+            }
+        }
+        "DumpRegister" => {
+            let qubits = arg.unwrap_array();
+            let qubits = qubits
+                .iter()
+                .map(|q| q.clone().unwrap_qubit().0)
+                .collect::<Vec<_>>();
+            if qubits.len() != qubits.iter().collect::<FxHashSet<_>>().len() {
+                return Err(Error::QubitUniqueness(arg_span));
+            }
+            let (state, qubit_count) = sim.capture_quantum_state();
+            let state = utils::split_state(&qubits, state, qubit_count)
+                .map_err(|()| Error::QubitsNotSeparable(arg_span))?;
+            match out.state(state, qubits.len()) {
                 Ok(()) => Ok(Value::unit()),
                 Err(_) => Err(Error::OutputFail(name_span)),
             }
@@ -66,7 +87,7 @@ pub(crate) fn call(
             if lo > hi {
                 Err(Error::EmptyRange(arg_span))
             } else {
-                Ok(Value::Int(rand::thread_rng().gen_range(lo..=hi)))
+                Ok(Value::Int(rng.gen_range(lo..=hi)))
             }
         }
         "DrawRandomDouble" => {
@@ -76,7 +97,7 @@ pub(crate) fn call(
             if lo > hi {
                 Err(Error::EmptyRange(arg_span))
             } else {
-                Ok(Value::Double(rand::thread_rng().gen_range(lo..=hi)))
+                Ok(Value::Double(rng.gen_range(lo..=hi)))
             }
         }
         #[allow(clippy::cast_possible_truncation)]
@@ -97,15 +118,21 @@ pub(crate) fn call(
         "__quantum__qis__cx__body" => two_qubit_gate(|ctl, q| sim.cx(ctl, q), arg, arg_span),
         "__quantum__qis__cy__body" => two_qubit_gate(|ctl, q| sim.cy(ctl, q), arg, arg_span),
         "__quantum__qis__cz__body" => two_qubit_gate(|ctl, q| sim.cz(ctl, q), arg, arg_span),
-        "__quantum__qis__rx__body" => Ok(one_qubit_rotation(|theta, q| sim.rx(theta, q), arg)),
+        "__quantum__qis__rx__body" => {
+            one_qubit_rotation(|theta, q| sim.rx(theta, q), arg, arg_span)
+        }
         "__quantum__qis__rxx__body" => {
             two_qubit_rotation(|theta, q0, q1| sim.rxx(theta, q0, q1), arg, arg_span)
         }
-        "__quantum__qis__ry__body" => Ok(one_qubit_rotation(|theta, q| sim.ry(theta, q), arg)),
+        "__quantum__qis__ry__body" => {
+            one_qubit_rotation(|theta, q| sim.ry(theta, q), arg, arg_span)
+        }
         "__quantum__qis__ryy__body" => {
             two_qubit_rotation(|theta, q0, q1| sim.ryy(theta, q0, q1), arg, arg_span)
         }
-        "__quantum__qis__rz__body" => Ok(one_qubit_rotation(|theta, q| sim.rz(theta, q), arg)),
+        "__quantum__qis__rz__body" => {
+            one_qubit_rotation(|theta, q| sim.rz(theta, q), arg, arg_span)
+        }
         "__quantum__qis__rzz__body" => {
             two_qubit_rotation(|theta, q0, q1| sim.rzz(theta, q0, q1), arg, arg_span)
         }
@@ -155,10 +182,19 @@ fn two_qubit_gate(
     }
 }
 
-fn one_qubit_rotation(mut gate: impl FnMut(f64, usize), arg: Value) -> Value {
+fn one_qubit_rotation(
+    mut gate: impl FnMut(f64, usize),
+    arg: Value,
+    arg_span: PackageSpan,
+) -> Result<Value, Error> {
     let [x, y] = unwrap_tuple(arg);
-    gate(x.unwrap_double(), y.unwrap_qubit().0);
-    Value::unit()
+    let angle = x.unwrap_double();
+    if angle.is_nan() || angle.is_infinite() {
+        Err(Error::InvalidRotationAngle(angle, arg_span))
+    } else {
+        gate(angle, y.unwrap_qubit().0);
+        Ok(Value::unit())
+    }
 }
 
 fn three_qubit_gate(
@@ -181,10 +217,13 @@ fn two_qubit_rotation(
     arg_span: PackageSpan,
 ) -> Result<Value, Error> {
     let [x, y, z] = unwrap_tuple(arg);
+    let angle = x.unwrap_double();
     if y == z {
         Err(Error::QubitUniqueness(arg_span))
+    } else if angle.is_nan() || angle.is_infinite() {
+        Err(Error::InvalidRotationAngle(angle, arg_span))
     } else {
-        gate(x.unwrap_double(), y.unwrap_qubit().0, z.unwrap_qubit().0);
+        gate(angle, y.unwrap_qubit().0, z.unwrap_qubit().0);
         Ok(Value::unit())
     }
 }

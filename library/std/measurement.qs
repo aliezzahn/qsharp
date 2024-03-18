@@ -4,6 +4,7 @@
 namespace Microsoft.Quantum.Measurement {
     open Microsoft.Quantum.Core;
     open Microsoft.Quantum.Intrinsic;
+    open Microsoft.Quantum.Diagnostics;
     open QIR.Intrinsic;
 
     /// # Summary
@@ -104,7 +105,7 @@ namespace Microsoft.Quantum.Measurement {
     operation MResetY (target : Qubit) : Result {
         // Map the qubit's state from the Z-basis to the Y-basis.
         // Then measure and reset the qubit.
-        // Note: this use HSadj instead fo HSH since that is sufficient for measurement.
+        // Note: this use HSadj instead of HSH since that is sufficient for measurement.
         Adjoint S(target);
         H(target);
         MResetZ(target)
@@ -129,4 +130,35 @@ namespace Microsoft.Quantum.Measurement {
     operation MResetZ (target : Qubit) : Result {
         __quantum__qis__mresetz__body(target)
     }
+
+    /// # Summary
+    /// Measures the content of a quantum register and converts
+    /// it to an integer. The measurement is performed with respect
+    /// to the standard computational basis, i.e., the eigenbasis of `PauliZ`.
+    ///
+    /// # Input
+    /// ## target
+    /// A quantum register in the little-endian encoding.
+    ///
+    /// # Output
+    /// An unsigned integer that contains the measured value of `target`.
+    ///
+    /// # Remarks
+    /// This operation resets its input register to the |00...0> state,
+    /// suitable for releasing back to a target machine.
+    @Config(Unrestricted)
+    operation MeasureInteger(target : Qubit[]) : Int {
+        let nBits = Length(target);
+        Fact(nBits < 64, $"`Length(target)` must be less than 64, but was {nBits}.");
+
+        mutable number = 0;
+        for i in 0..nBits-1 {
+            if (MResetZ(target[i]) == One) {
+                set number |||= 1 <<< i;
+            }
+        }
+
+        number
+    }
+
 }

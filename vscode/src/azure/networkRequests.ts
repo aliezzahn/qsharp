@@ -2,22 +2,29 @@
 // Licensed under the MIT License.
 
 import { log } from "qsharp-lang";
-import { workspace } from "vscode";
-import { EventType, UserFlowStatus, sendTelemetryEvent } from "../telemetry";
+import {
+  EventType,
+  UserFlowStatus,
+  getUserAgent,
+  sendTelemetryEvent,
+} from "../telemetry";
 import { getRandomGuid } from "../utils";
 
 const publicMgmtEndpoint = "https://management.azure.com";
 
+export const useProxy = true;
+
 export async function azureRequest(
   uri: string,
   token: string,
-  correlationId?: string,
+  associationId?: string,
   method = "GET",
   body?: string,
 ) {
   const headers: [string, string][] = [
     ["Authorization", `Bearer ${token}`],
     ["Content-Type", "application/json"],
+    ["x-ms-useragent", getUserAgent()],
   ];
 
   try {
@@ -30,17 +37,17 @@ export async function azureRequest(
 
     if (!response.ok) {
       log.error("Azure request failed", response);
-      if (correlationId) {
+      if (associationId) {
         sendTelemetryEvent(
           EventType.AzureRequestFailed,
           {
             reason: `request to azure returned code ${response.status}`,
-            correlationId,
+            associationId,
           },
           {},
         );
       }
-      throw Error(`Azure request failed: ${response.statusText}`);
+      throw await getAzureQuantumError(response);
     }
 
     log.debug(`Got response ${response.status} ${response.statusText}`);
@@ -49,15 +56,15 @@ export async function azureRequest(
 
     return result;
   } catch (e) {
-    if (correlationId) {
+    if (associationId) {
       sendTelemetryEvent(
         EventType.AzureRequestFailed,
-        { reason: `request to azure failed to return`, correlationId },
+        { reason: `request to azure failed to return`, associationId },
         {},
       );
     }
     log.error(`Failed to fetch ${uri}: ${e}`);
-    throw e;
+    throw new Error(getErrorMessage(e));
   }
 }
 
@@ -65,56 +72,105 @@ export async function azureRequest(
 export async function storageRequest(
   uri: string,
   method: string,
+  token?: string,
+  proxy?: string,
   extraHeaders?: [string, string][],
   body?: string | Uint8Array,
-  correlationId?: string,
+  associationId?: string,
 ) {
   const headers: [string, string][] = [
     ["x-ms-version", "2023-01-03"],
     ["x-ms-date", new Date().toUTCString()],
+    ["x-ms-useragent", getUserAgent()],
   ];
-  const storageProxy: string | undefined = workspace
-    .getConfiguration("Q#")
-    .get("storageProxy"); // e.g. in settings.json: "Q#.storageProxy": "https://qsx-proxy.azurewebsites.net/api/proxy";
+  if (token) headers.push(["Authorization", `Bearer ${token}`]);
 
   if (extraHeaders?.length) headers.push(...extraHeaders);
-  if (storageProxy) {
+  if (proxy) {
     log.debug(`Setting x-proxy-to header to ${uri}`);
     headers.push(["x-proxy-to", uri]);
-    uri = storageProxy;
+    uri = proxy;
   }
   try {
     log.debug(`Fetching ${uri} with method ${method}`);
     const response = await fetch(uri, { method, headers, body });
     if (!response.ok) {
       log.error("Storage request failed", response);
-      if (correlationId) {
+      if (associationId) {
         sendTelemetryEvent(
           EventType.StorageRequestFailed,
           {
             reason: `request to storage on azure returned code ${response.status}`,
-            correlationId,
+            associationId,
           },
           {},
         );
       }
-      throw Error(`Storage request failed: ${response.statusText}`);
+      throw await getAzureStorageError(response);
     }
     log.debug(`Got response ${response.status} ${response.statusText}`);
     return response;
   } catch (e) {
     log.error(`Failed to fetch ${uri}: ${e}`);
-    if (correlationId) {
+    if (associationId) {
       sendTelemetryEvent(
         EventType.StorageRequestFailed,
         {
           reason: `request to storage on azure failed to return`,
-          correlationId,
+          associationId,
         },
         {},
       );
     }
-    throw e;
+    throw new Error(getErrorMessage(e));
+  }
+}
+
+class AzureError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+async function getAzureQuantumError(response: Response): Promise<AzureError> {
+  let error: { code: string; message: string } | undefined = undefined;
+  try {
+    const json = await response.json();
+    // Extract the error data if it conforms to the Azure Quantum error schema defined in
+    // https://github.com/Azure/azure-rest-api-specs/blob/957fd518388828b31126417415b04f859b95c586/specification/quantum/data-plane/Microsoft.Quantum/preview/2022-09-12-preview/quantum.json#L1186
+    if (json && json.error && json.error.code && json.error.message) {
+      error = json.error;
+    }
+  } catch (_) {
+    /* empty */
+  }
+
+  let message;
+  if (error) {
+    message = `Azure Quantum request failed with status ${response.status}.\n${error.code}: ${error.message}`;
+  } else {
+    message = `Azure Quantum request failed with status ${response.status}.`;
+  }
+  return new AzureError(message);
+}
+
+function getAzureStorageError(response: Response): AzureError {
+  // Azure Storage appears to uses headers and xml responses to communicate error data,
+  // but we have not seen yet these in practice.
+  // https://github.com/Azure/azure-rest-api-specs/blob/eb06c34581dc6f56868ee9cc811a51f0e1a50770/specification/storage/data-plane/Microsoft.BlobStorage/preview/2021-12-02/blob.json#L75C30-L75C30
+  return new AzureError(
+    `Storage request failed with status ${response.status}.`,
+  );
+}
+
+// Generate a user friendly error message
+function getErrorMessage(e: any): string {
+  if (e instanceof AzureError) {
+    return e.message;
+  } else if (e instanceof Error) {
+    return `Request failed: ${e.message}`;
+  } else {
+    return `Request failed.`;
   }
 }
 
@@ -165,6 +221,10 @@ export class QuantumUris {
   sasUri() {
     return `${this.endpoint}${this.id}/storage/sasUri?api-version=${this.apiVersion}`;
   }
+
+  storageProxy() {
+    return `${this.endpoint}${this.id}/storage/proxy?api-version=${this.apiVersion}`;
+  }
 }
 
 export class StorageUris {
@@ -196,8 +256,9 @@ export class StorageUris {
 }
 
 export async function checkCorsConfig(token: string, quantumUris: QuantumUris) {
-  const correlationId = getRandomGuid();
-  sendTelemetryEvent(EventType.CheckCorsStart, { correlationId }, {});
+  const associationId = getRandomGuid();
+  const start = performance.now();
+  sendTelemetryEvent(EventType.CheckCorsStart, { associationId }, {});
 
   log.debug("Checking CORS configuration for the workspace");
 
@@ -206,7 +267,7 @@ export async function checkCorsConfig(token: string, quantumUris: QuantumUris) {
   const sasResponse: ResponseTypes.SasUri = await azureRequest(
     quantumUris.sasUri(),
     token,
-    correlationId,
+    associationId,
     "POST",
     body,
   );
@@ -254,8 +315,8 @@ export async function checkCorsConfig(token: string, quantumUris: QuantumUris) {
   log.debug("Pre-flighted GET request didn't throw, so CORS seems good");
   sendTelemetryEvent(
     EventType.CheckCorsEnd,
-    { correlationId, flowStatus: UserFlowStatus.Succeeded },
-    {},
+    { associationId, flowStatus: UserFlowStatus.Succeeded },
+    { timeToCompleteMs: performance.now() - start },
   );
 }
 

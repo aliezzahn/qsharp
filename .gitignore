@@ -1,6 +1,9 @@
 /target
+/widgets/dist/
+/widgets/src/qsharp_widgets/static/
 node_modules/
 __pycache__/
+.venv/
 .DS_Store
 .vscode/*
 .vscode-test-web/
@@ -12,3 +15,5 @@ __pycache__/
 /fuzz/artifacts
 /fuzz/coverage
 /fuzz/Cargo.lock
+.mypy_cache/
+.pytest_cache/

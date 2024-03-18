@@ -1,9 +1,12 @@
 [workspace]
 members = [
+    "allocator",
+    "allocator/mimalloc-sys",
     "compiler/qsc",
     "compiler/qsc_ast",
     "compiler/qsc_codegen",
     "compiler/qsc_data_structures",
+    "compiler/qsc_doc_gen",
     "compiler/qsc_eval",
     "compiler/qsc_fir",
     "compiler/qsc_frontend",
@@ -14,8 +17,9 @@ members = [
     "fuzz",
     "katas",
     "language_service",
-    "library/tests",
+    "library",
     "pip",
+    "resource_estimator",
     "wasm",
 ]
 resolver = "2"
@@ -29,12 +33,16 @@ license = "MIT"
 version = "0.0.0"
 
 [workspace.dependencies]
+bitflags = "2.4.2"
 clap = "4.4"
 criterion = { version = "0.5", default-features = false }
-enum-iterator = "1.4"
-env_logger = "0.10.0"
+enum-iterator = "1.5"
+env_logger = "0.10"
 expect-test = "1.4"
-getrandom = { version = "0.2" }
+futures = "0.3"
+futures-util = "0.3"
+fasteval = "0.2"
+getrandom = "0.2"
 indoc = "2.0"
 js-sys = "0.3"
 libfuzzer-sys = "0.4"
@@ -44,16 +52,28 @@ thiserror = "1.0"
 num-bigint = "0.4"
 num-complex = "0.4"
 num-traits = "0.2"
+probability = "0.20"
 indenter = "0.3"
 regex-lite = "0.1"
 rustc-hash = "1.1.0"
-serde = "1.0"
+serde = { version = "1.0", features = [ "derive" ] }
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 rand = "0.8"
-serde_json = { version = "1.0" }
-pyo3 = { version = "0.20", features = ["abi3-py37", "extension-module"] }
-quantum-sparse-sim = { git = "https://github.com/qir-alliance/qir-runner", rev = "f000e0066f56338595be37092cd0498f72ab10a2", default-features = false }
+serde_json = "1.0"
+pyo3 = "0.20"
+quantum-sparse-sim = { git = "https://github.com/qir-alliance/qir-runner", rev = "e7de80bf06dcaf69367576ec31f901c0496a9832", default-features = false }
+async-trait = "0.1"
+tokio = { version = "1.35", features = ["macros", "rt"] }
+
+[workspace.lints.clippy]
+mod_module_files = "warn"
+pedantic = "warn"
+unwrap_used = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
 
 [profile.release]
 debug = 1

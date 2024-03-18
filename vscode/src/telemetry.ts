@@ -1,3 +1,8 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+/// <reference types="user-agent-data-types" />
+
 import * as vscode from "vscode";
 import TelemetryReporter from "@vscode/extension-telemetry";
 import { log } from "qsharp-lang";
@@ -5,7 +10,6 @@ import { log } from "qsharp-lang";
 export enum EventType {
   InitializePlugin = "Qsharp.InitializePlugin",
   LoadLanguageService = "Qsharp.LoadLanguageService",
-  QSharpJupyterCellInitialized = "Qsharp.JupyterCellInitialized",
   ReturnCompletionList = "Qsharp.ReturnCompletionList",
   GenerateQirStart = "Qsharp.GenerateQirStart",
   GenerateQirEnd = "Qsharp.GenerateQirEnd",
@@ -30,6 +34,12 @@ export enum EventType {
   DebugSessionEvent = "Qsharp.DebugSessionEvent",
   Launch = "Qsharp.Launch",
   OpenedDocument = "Qsharp.OpenedDocument",
+  TriggerResourceEstimation = "Qsharp.TriggerResourceEstimation",
+  ResourceEstimationStart = "Qsharp.ResourceEstimationStart",
+  ResourceEstimationEnd = "Qsharp.ResourceEstimationEnd",
+  TriggerHistogram = "Qsharp.TriggerHistogram",
+  HistogramStart = "Qsharp.HistogramStart",
+  HistogramEnd = "Qsharp.HistogramEnd",
 }
 
 type Empty = { [K in any]: never };
@@ -45,136 +55,156 @@ type EventTypes = {
       timeToStartMs: number;
     };
   };
-  [EventType.QSharpJupyterCellInitialized]: {
-    properties: Empty;
-    measurements: Empty;
-  };
   [EventType.ReturnCompletionList]: {
     properties: Empty;
     measurements: { timeToCompletionMs: number; completionListLength: number };
   };
   [EventType.GenerateQirStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.GenerateQirEnd]: {
-    properties: { correlationId: string };
-    measurements: { qirLength: number };
+    properties: { associationId: string };
+    measurements: { qirLength: number; timeToCompleteMs: number };
   };
   [EventType.RenderQuantumStateStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.RenderQuantumStateEnd]: {
-    properties: { correlationId: string };
-    measurements: Empty;
+    properties: { associationId: string };
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.SubmitToAzureStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.SubmitToAzureEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.AuthSessionStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.AuthSessionEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.QueryWorkspacesStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.QueryWorkspacesEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.AzureRequestFailed]: {
-    properties: { correlationId: string; reason?: string };
+    properties: { associationId: string; reason?: string };
     measurements: Empty;
   };
   [EventType.StorageRequestFailed]: {
-    properties: { correlationId: string; reason?: string };
+    properties: { associationId: string; reason?: string };
     measurements: Empty;
   };
   [EventType.GetJobFilesStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.GetJobFilesEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.QueryWorkspaceStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.QueryWorkspaceEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.CheckCorsStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.CheckCorsEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.InitializeRuntimeStart]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.InitializeRuntimeEnd]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       reason?: string;
       flowStatus: UserFlowStatus;
     };
-    measurements: Empty;
+    measurements: { timeToCompleteMs: number };
   };
   [EventType.DebugSessionEvent]: {
     properties: {
-      correlationId: string;
+      associationId: string;
       event: DebugEvent;
     };
     measurements: Empty;
   };
   [EventType.Launch]: {
-    properties: { correlationId: string };
+    properties: { associationId: string };
     measurements: Empty;
   };
   [EventType.OpenedDocument]: {
     properties: { documentType: QsharpDocumentType };
     measurements: { linesOfCode: number };
+  };
+  [EventType.TriggerResourceEstimation]: {
+    properties: { associationId: string };
+    measurements: Empty;
+  };
+  [EventType.ResourceEstimationStart]: {
+    properties: { associationId: string };
+    measurements: Empty;
+  };
+  [EventType.ResourceEstimationEnd]: {
+    properties: { associationId: string };
+    measurements: { timeToCompleteMs: number };
+  };
+  [EventType.TriggerHistogram]: {
+    properties: { associationId: string };
+    measurements: Empty;
+  };
+  [EventType.HistogramStart]: {
+    properties: { associationId: string };
+    measurements: Empty;
+  };
+  [EventType.HistogramEnd]: {
+    properties: { associationId: string };
+    measurements: { timeToCompleteMs: number };
   };
 };
 
@@ -198,6 +228,7 @@ export enum DebugEvent {
 }
 
 let reporter: TelemetryReporter | undefined;
+let userAgentString: string | undefined;
 
 export function initTelemetry(context: vscode.ExtensionContext) {
   const packageJson = context.extension?.packageJSON;
@@ -205,6 +236,9 @@ export function initTelemetry(context: vscode.ExtensionContext) {
     return;
   }
   reporter = new TelemetryReporter(packageJson.aiKey);
+  const version = context.extension?.packageJSON?.version;
+  const browserAndRelease = getBrowserRelease();
+  userAgentString = `VSCode/${version} ${browserAndRelease}`;
 
   sendTelemetryEvent(EventType.InitializePlugin, {}, {});
 }
@@ -224,4 +258,18 @@ export function sendTelemetryEvent<E extends keyof EventTypes>(
       measurements,
     )}`,
   );
+}
+
+function getBrowserRelease(): string {
+  if (navigator.userAgentData?.brands) {
+    const browser =
+      navigator.userAgentData.brands[navigator.userAgentData.brands.length - 1];
+    return `${browser.brand}/${browser.version}`;
+  } else {
+    return navigator.userAgent;
+  }
+}
+
+export function getUserAgent(): string {
+  return userAgentString || navigator.userAgent;
 }

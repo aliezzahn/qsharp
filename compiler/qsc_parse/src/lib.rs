@@ -19,8 +19,8 @@ mod ty;
 use lex::TokenKind;
 use miette::Diagnostic;
 use qsc_ast::ast::{Expr, Namespace, TopLevelNode};
-use qsc_data_structures::span::Span;
-use scan::Scanner;
+use qsc_data_structures::{language_features::LanguageFeatures, span::Span};
+use scan::ParserContext;
 use std::result;
 use thiserror::Error;
 
@@ -30,6 +30,7 @@ use thiserror::Error;
 pub struct Error(ErrorKind);
 
 impl Error {
+    #[must_use]
     pub fn with_offset(self, offset: u32) -> Self {
         Self(self.0.with_offset(offset))
     }
@@ -70,6 +71,9 @@ enum ErrorKind {
     #[error("expected callable inputs to be parenthesized")]
     #[diagnostic(code("Qsc.Parse.MissingParens"))]
     MissingParens(#[label] Span),
+    #[error("missing entry in sequence")]
+    #[diagnostic(code("Qsc.Parse.MissingSeqEntry"))]
+    MissingSeqEntry(#[label] Span),
 }
 
 impl ErrorKind {
@@ -86,18 +90,23 @@ impl ErrorKind {
             Self::FloatingDocComment(span) => Self::FloatingDocComment(span + offset),
             Self::FloatingAttr(span) => Self::FloatingAttr(span + offset),
             Self::FloatingVisibility(span) => Self::FloatingVisibility(span + offset),
+            Self::MissingSeqEntry(span) => Self::MissingSeqEntry(span + offset),
         }
     }
 }
 
 type Result<T> = result::Result<T, Error>;
 
-trait Parser<T>: FnMut(&mut Scanner) -> Result<T> {}
+trait Parser<T>: FnMut(&mut ParserContext) -> Result<T> {}
 
-impl<T, F: FnMut(&mut Scanner) -> Result<T>> Parser<T> for F {}
+impl<T, F: FnMut(&mut ParserContext) -> Result<T>> Parser<T> for F {}
 
-pub fn namespaces(input: &str) -> (Vec<Namespace>, Vec<Error>) {
-    let mut scanner = Scanner::new(input);
+#[must_use]
+pub fn namespaces(
+    input: &str,
+    language_features: LanguageFeatures,
+) -> (Vec<Namespace>, Vec<Error>) {
+    let mut scanner = ParserContext::new(input, language_features);
     match item::parse_namespaces(&mut scanner) {
         Ok(namespaces) => (namespaces, scanner.into_errors()),
         Err(error) => {
@@ -108,8 +117,12 @@ pub fn namespaces(input: &str) -> (Vec<Namespace>, Vec<Error>) {
     }
 }
 
-pub fn top_level_nodes(input: &str) -> (Vec<TopLevelNode>, Vec<Error>) {
-    let mut scanner = Scanner::new(input);
+#[must_use]
+pub fn top_level_nodes(
+    input: &str,
+    language_features: LanguageFeatures,
+) -> (Vec<TopLevelNode>, Vec<Error>) {
+    let mut scanner = ParserContext::new(input, language_features);
     match item::parse_top_level_nodes(&mut scanner) {
         Ok(nodes) => (nodes, scanner.into_errors()),
         Err(error) => {
@@ -120,8 +133,9 @@ pub fn top_level_nodes(input: &str) -> (Vec<TopLevelNode>, Vec<Error>) {
     }
 }
 
-pub fn expr(input: &str) -> (Box<Expr>, Vec<Error>) {
-    let mut scanner = Scanner::new(input);
+#[must_use]
+pub fn expr(input: &str, language_features: LanguageFeatures) -> (Box<Expr>, Vec<Error>) {
+    let mut scanner = ParserContext::new(input, language_features);
     match expr::expr_eof(&mut scanner) {
         Ok(expr) => (expr, scanner.into_errors()),
         Err(error) => {

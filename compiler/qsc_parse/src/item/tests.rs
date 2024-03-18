@@ -1,9 +1,18 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::{parse, parse_attr, parse_namespaces, parse_spec_decl};
-use crate::tests::{check, check_vec};
+#![allow(clippy::needless_raw_string_hashes)]
+
+use super::{parse, parse_attr, parse_spec_decl};
+use crate::{
+    scan::ParserContext,
+    tests::{check, check_vec, check_vec_v2_preview},
+};
 use expect_test::expect;
+
+fn parse_namespaces(s: &mut ParserContext) -> Result<Vec<qsc_ast::ast::Namespace>, crate::Error> {
+    super::parse_namespaces(s)
+}
 
 #[test]
 fn body_intrinsic() {
@@ -168,6 +177,127 @@ fn ty_decl_doc() {
 }
 
 #[test]
+fn udt_item_doc() {
+    check(
+        parse,
+        "newtype Foo = (
+        /// doc-string for arg1
+        arg1 : Int,
+        /// doc-string for arg2
+        arg2 : Int
+    );",
+        &expect![[r#"
+            Item _id_ [0-125]:
+                New Type (Ident _id_ [8-11] "Foo"): TyDef _id_ [14-124]: Tuple:
+                    TyDef _id_ [56-66]: Field:
+                        Ident _id_ [56-60] "arg1"
+                        Type _id_ [63-66]: Path: Path _id_ [63-66] (Ident _id_ [63-66] "Int")
+                    TyDef _id_ [108-118]: Field:
+                        Ident _id_ [108-112] "arg2"
+                        Type _id_ [115-118]: Path: Path _id_ [115-118] (Ident _id_ [115-118] "Int")"#]],
+    );
+}
+#[test]
+fn callable_param_doc() {
+    check(
+        parse,
+        "
+        operation Foo(
+          /// the input
+        input: Int): Unit {}
+        ",
+        &expect![[r#"
+            Item _id_ [9-76]:
+                Callable _id_ [9-76] (Operation):
+                    name: Ident _id_ [19-22] "Foo"
+                    input: Pat _id_ [22-67]: Paren:
+                        Pat _id_ [56-66]: Bind:
+                            Ident _id_ [56-61] "input"
+                            Type _id_ [63-66]: Path: Path _id_ [63-66] (Ident _id_ [63-66] "Int")
+                    output: Type _id_ [69-73]: Path: Path _id_ [69-73] (Ident _id_ [69-73] "Unit")
+                    body: Block: Block _id_ [74-76]: <empty>"#]],
+    );
+}
+#[test]
+fn callable_return_doc() {
+    check(
+        parse,
+        "
+        operation Foo(input: Int):
+        /// the return type
+        Unit {}
+        ",
+        &expect![[r#"
+            Item _id_ [9-79]:
+                Callable _id_ [9-79] (Operation):
+                    name: Ident _id_ [19-22] "Foo"
+                    input: Pat _id_ [22-34]: Paren:
+                        Pat _id_ [23-33]: Bind:
+                            Ident _id_ [23-28] "input"
+                            Type _id_ [30-33]: Path: Path _id_ [30-33] (Ident _id_ [30-33] "Int")
+                    output: Type _id_ [72-76]: Path: Path _id_ [72-76] (Ident _id_ [72-76] "Unit")
+                    body: Block: Block _id_ [77-79]: <empty>"#]],
+    );
+}
+
+#[test]
+fn nested_udt_item_doc() {
+    check(
+        parse,
+        "newtype Nested = (Double,
+            (
+                /// Doc comment 1
+                ItemName : Int,
+                /// Doc comment 2
+                String,
+                (
+                    /// Doc comment 3
+                    ItemName: String
+                )
+            )
+        );",
+        &expect![[r#"
+            Item _id_ [0-299]:
+                New Type (Ident _id_ [8-14] "Nested"): TyDef _id_ [17-298]: Tuple:
+                    TyDef _id_ [18-24]: Field:
+                        Type _id_ [18-24]: Path: Path _id_ [18-24] (Ident _id_ [18-24] "Double")
+                    TyDef _id_ [38-288]: Tuple:
+                        TyDef _id_ [90-104]: Field:
+                            Ident _id_ [90-98] "ItemName"
+                            Type _id_ [101-104]: Path: Path _id_ [101-104] (Ident _id_ [101-104] "Int")
+                        TyDef _id_ [156-162]: Field:
+                            Type _id_ [156-162]: Path: Path _id_ [156-162] (Ident _id_ [156-162] "String")
+                        TyDef _id_ [180-274]: Paren:
+                            TyDef _id_ [240-256]: Field:
+                                Ident _id_ [240-248] "ItemName"
+                                Type _id_ [250-256]: Path: Path _id_ [250-256] (Ident _id_ [250-256] "String")"#]],
+    );
+}
+
+#[test]
+fn allow_docstring_basic_type() {
+    check(
+        parse,
+        "newtype Nested = (Double,
+            (
+            ItemName:
+                /// Doc comment
+                String
+            )
+        );",
+        &expect![[r#"
+            Item _id_ [0-141]:
+                New Type (Ident _id_ [8-14] "Nested"): TyDef _id_ [17-140]: Tuple:
+                    TyDef _id_ [18-24]: Field:
+                        Type _id_ [18-24]: Path: Path _id_ [18-24] (Ident _id_ [18-24] "Double")
+                    TyDef _id_ [38-130]: Paren:
+                        TyDef _id_ [52-116]: Field:
+                            Ident _id_ [52-60] "ItemName"
+                            Type _id_ [110-116]: Path: Path _id_ [110-116] (Ident _id_ [110-116] "String")"#]],
+    );
+}
+
+#[test]
 fn ty_def_invalid_field_name() {
     check(
         parse,
@@ -301,6 +431,86 @@ fn ty_def_tuple_lambda_args() {
 }
 
 #[test]
+fn ty_def_duplicate_comma() {
+    check(
+        parse,
+        "newtype Foo = (Int,, Int);",
+        &expect![[r#"
+            Item _id_ [0-26]:
+                New Type (Ident _id_ [8-11] "Foo"): TyDef _id_ [14-25]: Tuple:
+                    TyDef _id_ [15-18]: Field:
+                        Type _id_ [15-18]: Path: Path _id_ [15-18] (Ident _id_ [15-18] "Int")
+                    TyDef _id_ [19-19]: Err
+                    TyDef _id_ [21-24]: Field:
+                        Type _id_ [21-24]: Path: Path _id_ [21-24] (Ident _id_ [21-24] "Int")
+
+            [
+                Error(
+                    MissingSeqEntry(
+                        Span {
+                            lo: 19,
+                            hi: 19,
+                        },
+                    ),
+                ),
+            ]"#]],
+    );
+}
+
+#[test]
+fn ty_def_initial_comma() {
+    check(
+        parse,
+        "newtype Foo = (, Int);",
+        &expect![[r#"
+            Item _id_ [0-22]:
+                New Type (Ident _id_ [8-11] "Foo"): TyDef _id_ [14-21]: Tuple:
+                    TyDef _id_ [15-15]: Err
+                    TyDef _id_ [17-20]: Field:
+                        Type _id_ [17-20]: Path: Path _id_ [17-20] (Ident _id_ [17-20] "Int")
+
+            [
+                Error(
+                    MissingSeqEntry(
+                        Span {
+                            lo: 15,
+                            hi: 15,
+                        },
+                    ),
+                ),
+            ]"#]],
+    );
+}
+
+#[test]
+fn ty_def_named_duplicate_comma() {
+    check(
+        parse,
+        "newtype Foo = (X : Int,, Int);",
+        &expect![[r#"
+            Item _id_ [0-30]:
+                New Type (Ident _id_ [8-11] "Foo"): TyDef _id_ [14-29]: Tuple:
+                    TyDef _id_ [15-22]: Field:
+                        Ident _id_ [15-16] "X"
+                        Type _id_ [19-22]: Path: Path _id_ [19-22] (Ident _id_ [19-22] "Int")
+                    TyDef _id_ [23-23]: Err
+                    TyDef _id_ [25-28]: Field:
+                        Type _id_ [25-28]: Path: Path _id_ [25-28] (Ident _id_ [25-28] "Int")
+
+            [
+                Error(
+                    MissingSeqEntry(
+                        Span {
+                            lo: 23,
+                            hi: 23,
+                        },
+                    ),
+                ),
+            ]"#]],
+    );
+}
+
+#[test]
 fn function_decl() {
     check(
         parse,
@@ -329,6 +539,25 @@ fn function_decl_doc() {
                     This is a
                     doc comment.
                 Callable _id_ [47-69] (Function):
+                    name: Ident _id_ [56-59] "Foo"
+                    input: Pat _id_ [59-61]: Unit
+                    output: Type _id_ [64-66]: Unit
+                    body: Block: Block _id_ [67-69]: <empty>"#]],
+    );
+}
+
+#[test]
+fn doc_between_attr_and_keyword() {
+    check(
+        parse,
+        "@EntryPoint()
+        /// doc comment.
+        function Foo() : () {}",
+        &expect![[r#"
+            Item _id_ [0-69]:
+                Attr _id_ [0-13] (Ident _id_ [1-11] "EntryPoint"):
+                    Expr _id_ [11-13]: Unit
+                Callable _id_ [22-69] (Function):
                     name: Ident _id_ [56-59] "Foo"
                     input: Pat _id_ [59-61]: Unit
                     output: Type _id_ [64-66]: Unit
@@ -447,6 +676,36 @@ fn function_two_ty_params() {
                     output: Type _id_ [25-29]: Path: Path _id_ [25-29] (Ident _id_ [25-29] "Unit")
                     body: Specializations:
                         SpecDecl _id_ [32-47] (Body): Gen: Intrinsic"#]],
+    );
+}
+
+#[test]
+fn function_duplicate_comma_in_ty_param() {
+    check(
+        parse,
+        "function Foo<'T,,>() : Unit { body intrinsic; }",
+        &expect![[r#"
+            Item _id_ [0-47]:
+                Callable _id_ [0-47] (Function):
+                    name: Ident _id_ [9-12] "Foo"
+                    generics:
+                        Ident _id_ [13-15] "'T"
+                        Ident _id_ [16-16] ""
+                    input: Pat _id_ [18-20]: Unit
+                    output: Type _id_ [23-27]: Path: Path _id_ [23-27] (Ident _id_ [23-27] "Unit")
+                    body: Specializations:
+                        SpecDecl _id_ [30-45] (Body): Gen: Intrinsic
+
+            [
+                Error(
+                    MissingSeqEntry(
+                        Span {
+                            lo: 16,
+                            hi: 16,
+                        },
+                    ),
+                ),
+            ]"#]],
     );
 }
 
@@ -1206,8 +1465,9 @@ fn callable_missing_parens() {
                     ),
                 ),
             ]"#]],
-    )
+    );
 }
+
 #[test]
 fn callable_missing_close_parens() {
     check_vec(
@@ -1234,8 +1494,9 @@ fn callable_missing_close_parens() {
                     ),
                 ),
             ]"#]],
-    )
+    );
 }
+
 #[test]
 fn callable_missing_open_parens() {
     check_vec(
@@ -1258,5 +1519,177 @@ fn callable_missing_open_parens() {
                     ),
                 ),
             ]"#]],
-    )
+    );
+}
+
+#[test]
+fn disallow_qubit_scoped_block() {
+    check_vec_v2_preview(
+        parse_namespaces,
+        "namespace Foo { operation Main() : Unit { use q1 = Qubit() {  };  } }",
+        &expect![[r#"
+            Namespace _id_ [0-69] (Ident _id_ [10-13] "Foo"):
+                Item _id_ [16-67]:
+                    Callable _id_ [16-67] (Operation):
+                        name: Ident _id_ [26-30] "Main"
+                        input: Pat _id_ [30-32]: Unit
+                        output: Type _id_ [35-39]: Path: Path _id_ [35-39] (Ident _id_ [35-39] "Unit")
+                        body: Block: Block _id_ [40-67]:
+                            Stmt _id_ [42-58]: Qubit (Fresh)
+                                Pat _id_ [46-48]: Bind:
+                                    Ident _id_ [46-48] "q1"
+                                QubitInit _id_ [51-58] Single
+                            Stmt _id_ [59-64]: Semi: Expr _id_ [59-63]: Expr Block: Block _id_ [59-63]: <empty>
+
+            [
+                Error(
+                    Token(
+                        Semi,
+                        Open(
+                            Brace,
+                        ),
+                        Span {
+                            lo: 59,
+                            hi: 60,
+                        },
+                    ),
+                ),
+            ]"#]],
+    );
+}
+
+#[test]
+fn reject_nested_namespace_with_items() {
+    check_vec(
+        parse_namespaces,
+        "namespace Outer {
+            namespace Inner {
+                function NestedFunction() : Unit {}
+                newtype NestedType = Int;
+            }
+        }",
+        &expect![[r#"
+            Namespace _id_ [0-99] (Ident _id_ [10-15] "Outer"):
+
+            [
+                Error(
+                    Token(
+                        Close(
+                            Brace,
+                        ),
+                        Keyword(
+                            Namespace,
+                        ),
+                        Span {
+                            lo: 30,
+                            hi: 39,
+                        },
+                    ),
+                ),
+                Error(
+                    Token(
+                        Eof,
+                        Keyword(
+                            Newtype,
+                        ),
+                        Span {
+                            lo: 116,
+                            hi: 123,
+                        },
+                    ),
+                ),
+            ]"#]],
+    );
+}
+
+#[test]
+fn reject_namespace_with_multiple_nested_levels() {
+    check_vec(
+        parse_namespaces,
+        "namespace LevelOne {
+            namespace LevelTwo {
+                namespace LevelThree {
+                    function DeepFunction() : Unit {}
+                }
+            }
+        }",
+        &expect![[r#"
+            Namespace _id_ [0-146] (Ident _id_ [10-18] "LevelOne"):
+
+            [
+                Error(
+                    Token(
+                        Close(
+                            Brace,
+                        ),
+                        Keyword(
+                            Namespace,
+                        ),
+                        Span {
+                            lo: 33,
+                            hi: 42,
+                        },
+                    ),
+                ),
+                Error(
+                    Token(
+                        Eof,
+                        Close(
+                            Brace,
+                        ),
+                        Span {
+                            lo: 163,
+                            hi: 164,
+                        },
+                    ),
+                ),
+            ]"#]],
+    );
+}
+
+#[test]
+fn namespace_with_attributes_and_docs() {
+    check_vec(
+        parse_namespaces,
+        "/// Documentation for LevelOne
+        namespace LevelOne {
+            @ExampleAttr()
+            /// Documentation that shouldn't show up, since docstrings go above attrs
+            function InnerItem() : Unit {}
+        }",
+        &expect![[r#"
+            Namespace _id_ [0-225] (Ident _id_ [49-57] "LevelOne"):
+                doc:
+                    Documentation for LevelOne
+                Item _id_ [72-215]:
+                    Attr _id_ [72-86] (Ident _id_ [73-84] "ExampleAttr"):
+                        Expr _id_ [84-86]: Unit
+                    Callable _id_ [99-215] (Function):
+                        name: Ident _id_ [194-203] "InnerItem"
+                        input: Pat _id_ [203-205]: Unit
+                        output: Type _id_ [208-212]: Path: Path _id_ [208-212] (Ident _id_ [208-212] "Unit")
+                        body: Block: Block _id_ [213-215]: <empty>"#]],
+    );
+}
+
+#[test]
+fn namespace_with_conflicting_names() {
+    check_vec(
+        parse_namespaces,
+        "namespace Conflicts {
+            function Item() : Unit {}
+            newtype Item = Int;
+        }",
+        &expect![[r#"
+            Namespace _id_ [0-101] (Ident _id_ [10-19] "Conflicts"):
+                Item _id_ [34-59]:
+                    Callable _id_ [34-59] (Function):
+                        name: Ident _id_ [43-47] "Item"
+                        input: Pat _id_ [47-49]: Unit
+                        output: Type _id_ [52-56]: Path: Path _id_ [52-56] (Ident _id_ [52-56] "Unit")
+                        body: Block: Block _id_ [57-59]: <empty>
+                Item _id_ [72-91]:
+                    New Type (Ident _id_ [80-84] "Item"): TyDef _id_ [87-90]: Field:
+                        Type _id_ [87-90]: Path: Path _id_ [87-90] (Ident _id_ [87-90] "Int")"#]],
+    );
 }

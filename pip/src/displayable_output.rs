@@ -9,6 +9,7 @@ use num_complex::{Complex64, ComplexFloat};
 use qsc::{fmt_basis_state_label, fmt_complex, format_state_id, get_phase};
 use std::fmt::Write;
 
+#[derive(Clone)]
 pub struct DisplayableState(pub Vec<(BigUint, Complex64)>, pub usize);
 
 impl DisplayableState {

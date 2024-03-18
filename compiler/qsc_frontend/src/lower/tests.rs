@@ -1,9 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::compile::{self, compile, PackageStore, SourceMap, TargetProfile};
+#![allow(clippy::needless_raw_string_hashes)]
+
+use crate::compile::{self, compile, PackageStore, RuntimeCapabilityFlags, SourceMap};
 use expect_test::{expect, Expect};
 use indoc::indoc;
+use qsc_data_structures::language_features::LanguageFeatures;
 
 fn check_hir(input: &str, expect: &Expect) {
     let sources = SourceMap::new([("test".into(), input.into())], None);
@@ -11,7 +14,8 @@ fn check_hir(input: &str, expect: &Expect) {
         &PackageStore::new(compile::core()),
         &[],
         sources,
-        TargetProfile::Full,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
     );
     expect.assert_eq(&unit.package.to_string());
 }
@@ -22,7 +26,8 @@ fn check_errors(input: &str, expect: &Expect) {
         &PackageStore::new(compile::core()),
         &[],
         sources,
-        TargetProfile::Full,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
     );
 
     let lower_errors: Vec<_> = unit
@@ -106,7 +111,7 @@ fn test_target_profile_full_attr_allowed() {
     check_errors(
         indoc! {"
             namespace input {
-                @Config(Full)
+                @Config(Unrestricted)
                 operation Foo() : Unit {
                     body ... {}
                 }
@@ -132,7 +137,7 @@ fn test_target_profile_attr_wrong_args() {
         &expect![[r#"
             [
                 InvalidAttrArgs(
-                    "Full or Base",
+                    "Unrestricted or Base",
                     Span {
                         lo: 29,
                         hi: 34,
@@ -297,12 +302,12 @@ fn lift_local_newtype() {
                             Block 4 [39-108] [Type Int]:
                                 Stmt 5 [49-67]: Item: 2
                                 Stmt 7 [76-91]: Local (Immutable):
-                                    Pat 8 [80-81] [Type UDT<Item 2>]: Bind: Ident 9 [80-81] "x"
-                                    Expr 10 [84-90] [Type UDT<Item 2>]: Call:
-                                        Expr 11 [84-87] [Type (Int -> UDT<Item 2>)]: Var: Item 2
+                                    Pat 8 [80-81] [Type UDT<"Bar": Item 2>]: Bind: Ident 9 [80-81] "x"
+                                    Expr 10 [84-90] [Type UDT<"Bar": Item 2>]: Call:
+                                        Expr 11 [84-87] [Type (Int -> UDT<"Bar": Item 2>)]: Var: Item 2
                                         Expr 12 [88-89] [Type Int]: Lit: Int(5)
                                 Stmt 13 [100-102]: Expr: Expr 14 [100-102] [Type Int]: UnOp (Unwrap):
-                                    Expr 15 [100-101] [Type UDT<Item 2>]: Var: Local 9
+                                    Expr 15 [100-101] [Type UDT<"Bar": Item 2>]: Var: Local 9
                         adj: <none>
                         ctl: <none>
                         ctl-adj: <none>
@@ -344,9 +349,9 @@ fn lift_newtype() {
                         body: SpecDecl 4 [41-95]: Impl:
                             Block 5 [64-95] [Type Unit]:
                                 Stmt 6 [74-89]: Local (Immutable):
-                                    Pat 7 [78-79] [Type UDT<Item 1>]: Bind: Ident 8 [78-79] "x"
-                                    Expr 9 [82-88] [Type UDT<Item 1>]: Call:
-                                        Expr 10 [82-85] [Type (Int -> UDT<Item 1>)]: Var: Item 1
+                                    Pat 7 [78-79] [Type UDT<"Foo": Item 1>]: Bind: Ident 8 [78-79] "x"
+                                    Expr 9 [82-88] [Type UDT<"Foo": Item 1>]: Call:
+                                        Expr 10 [82-85] [Type (Int -> UDT<"Foo": Item 1>)]: Var: Item 1
                                         Expr 11 [86-87] [Type Int]: Lit: Int(1)
                         adj: <none>
                         ctl: <none>
@@ -384,9 +389,9 @@ fn lift_newtype_tuple() {
                         body: SpecDecl 4 [51-110]: Impl:
                             Block 5 [74-110] [Type Unit]:
                                 Stmt 6 [84-104]: Local (Immutable):
-                                    Pat 7 [88-89] [Type UDT<Item 1>]: Bind: Ident 8 [88-89] "x"
-                                    Expr 9 [92-103] [Type UDT<Item 1>]: Call:
-                                        Expr 10 [92-95] [Type ((Int, Double) -> UDT<Item 1>)]: Var: Item 1
+                                    Pat 7 [88-89] [Type UDT<"Foo": Item 1>]: Bind: Ident 8 [88-89] "x"
+                                    Expr 9 [92-103] [Type UDT<"Foo": Item 1>]: Call:
+                                        Expr 10 [92-95] [Type ((Int, Double) -> UDT<"Foo": Item 1>)]: Var: Item 1
                                         Expr 11 [95-103] [Type (Int, Double)]: Tuple:
                                             Expr 12 [96-97] [Type Int]: Lit: Int(1)
                                             Expr 13 [99-102] [Type Double]: Lit: Double(2.3)
@@ -432,16 +437,16 @@ fn lift_newtype_tuple_fields() {
                         body: SpecDecl 4 [57-138]: Impl:
                             Block 5 [80-138] [Type Unit]:
                                 Stmt 6 [90-110]: Local (Immutable):
-                                    Pat 7 [94-95] [Type UDT<Item 1>]: Bind: Ident 8 [94-95] "x"
-                                    Expr 9 [98-109] [Type UDT<Item 1>]: Call:
-                                        Expr 10 [98-101] [Type ((Int, Double) -> UDT<Item 1>)]: Var: Item 1
+                                    Pat 7 [94-95] [Type UDT<"Foo": Item 1>]: Bind: Ident 8 [94-95] "x"
+                                    Expr 9 [98-109] [Type UDT<"Foo": Item 1>]: Call:
+                                        Expr 10 [98-101] [Type ((Int, Double) -> UDT<"Foo": Item 1>)]: Var: Item 1
                                         Expr 11 [101-109] [Type (Int, Double)]: Tuple:
                                             Expr 12 [102-103] [Type Int]: Lit: Int(1)
                                             Expr 13 [105-108] [Type Double]: Lit: Double(2.3)
                                 Stmt 14 [119-132]: Local (Immutable):
                                     Pat 15 [123-124] [Type Double]: Bind: Ident 16 [123-124] "y"
                                     Expr 17 [127-131] [Type Double]: Field:
-                                        Expr 18 [127-128] [Type UDT<Item 1>]: Var: Local 8
+                                        Expr 18 [127-128] [Type UDT<"Foo": Item 1>]: Var: Local 8
                                         Path(FieldPath { indices: [1] })
                         adj: <none>
                         ctl: <none>
@@ -479,9 +484,9 @@ fn lift_newtype_nested_tuple() {
                         body: SpecDecl 4 [59-126]: Impl:
                             Block 5 [82-126] [Type Unit]:
                                 Stmt 6 [92-120]: Local (Immutable):
-                                    Pat 7 [96-97] [Type UDT<Item 1>]: Bind: Ident 8 [96-97] "x"
-                                    Expr 9 [100-119] [Type UDT<Item 1>]: Call:
-                                        Expr 10 [100-103] [Type ((Int, (Double, Bool)) -> UDT<Item 1>)]: Var: Item 1
+                                    Pat 7 [96-97] [Type UDT<"Foo": Item 1>]: Bind: Ident 8 [96-97] "x"
+                                    Expr 9 [100-119] [Type UDT<"Foo": Item 1>]: Call:
+                                        Expr 10 [100-103] [Type ((Int, (Double, Bool)) -> UDT<"Foo": Item 1>)]: Var: Item 1
                                         Expr 11 [103-119] [Type (Int, (Double, Bool))]: Tuple:
                                             Expr 12 [104-105] [Type Int]: Lit: Int(1)
                                             Expr 13 [107-118] [Type (Double, Bool)]: Tuple:
@@ -533,9 +538,9 @@ fn lift_newtype_nested_tuple_fields() {
                         body: SpecDecl 4 [68-157]: Impl:
                             Block 5 [91-157] [Type Unit]:
                                 Stmt 6 [101-129]: Local (Immutable):
-                                    Pat 7 [105-106] [Type UDT<Item 1>]: Bind: Ident 8 [105-106] "x"
-                                    Expr 9 [109-128] [Type UDT<Item 1>]: Call:
-                                        Expr 10 [109-112] [Type ((Int, (Double, Bool)) -> UDT<Item 1>)]: Var: Item 1
+                                    Pat 7 [105-106] [Type UDT<"Foo": Item 1>]: Bind: Ident 8 [105-106] "x"
+                                    Expr 9 [109-128] [Type UDT<"Foo": Item 1>]: Call:
+                                        Expr 10 [109-112] [Type ((Int, (Double, Bool)) -> UDT<"Foo": Item 1>)]: Var: Item 1
                                         Expr 11 [112-128] [Type (Int, (Double, Bool))]: Tuple:
                                             Expr 12 [113-114] [Type Int]: Lit: Int(1)
                                             Expr 13 [116-127] [Type (Double, Bool)]: Tuple:
@@ -544,7 +549,7 @@ fn lift_newtype_nested_tuple_fields() {
                                 Stmt 16 [138-151]: Local (Immutable):
                                     Pat 17 [142-143] [Type Bool]: Bind: Ident 18 [142-143] "y"
                                     Expr 19 [146-150] [Type Bool]: Field:
-                                        Expr 20 [146-147] [Type UDT<Item 1>]: Var: Local 8
+                                        Expr 20 [146-147] [Type UDT<"Foo": Item 1>]: Var: Local 8
                                         Path(FieldPath { indices: [1, 1] })
                         adj: <none>
                         ctl: <none>
@@ -592,7 +597,7 @@ fn lift_newtype_from_newtype() {
                                 type: Int
                             TyDef [91-97]: Field:
                                 name: y [91-92]
-                                type: UDT<Item 1>
+                                type: UDT<"Foo": Item 1>
                 Item 3 [104-205] (Public):
                     Parent: 0
                     Callable 2 [104-205] (operation):
@@ -603,13 +608,13 @@ fn lift_newtype_from_newtype() {
                         body: SpecDecl 5 [104-205]: Impl:
                             Block 6 [127-205] [Type Unit]:
                                 Stmt 7 [137-174]: Local (Immutable):
-                                    Pat 8 [141-142] [Type UDT<Item 2>]: Bind: Ident 9 [141-142] "x"
-                                    Expr 10 [145-173] [Type UDT<Item 2>]: Call:
-                                        Expr 11 [145-148] [Type ((Int, UDT<Item 1>) -> UDT<Item 2>)]: Var: Item 2
-                                        Expr 12 [148-173] [Type (Int, UDT<Item 1>)]: Tuple:
+                                    Pat 8 [141-142] [Type UDT<"Bar": Item 2>]: Bind: Ident 9 [141-142] "x"
+                                    Expr 10 [145-173] [Type UDT<"Bar": Item 2>]: Call:
+                                        Expr 11 [145-148] [Type ((Int, UDT<"Foo": Item 1>) -> UDT<"Bar": Item 2>)]: Var: Item 2
+                                        Expr 12 [148-173] [Type (Int, UDT<"Foo": Item 1>)]: Tuple:
                                             Expr 13 [149-150] [Type Int]: Lit: Int(1)
-                                            Expr 14 [152-172] [Type UDT<Item 1>]: Call:
-                                                Expr 15 [152-155] [Type ((Int, (Double, Bool)) -> UDT<Item 1>)]: Var: Item 1
+                                            Expr 14 [152-172] [Type UDT<"Foo": Item 1>]: Call:
+                                                Expr 15 [152-155] [Type ((Int, (Double, Bool)) -> UDT<"Foo": Item 1>)]: Var: Item 1
                                                 Expr 16 [155-172] [Type (Int, (Double, Bool))]: Tuple:
                                                     Expr 17 [156-157] [Type Int]: Lit: Int(2)
                                                     Expr 18 [159-171] [Type (Double, Bool)]: Tuple:
@@ -618,8 +623,8 @@ fn lift_newtype_from_newtype() {
                                 Stmt 21 [183-199]: Local (Immutable):
                                     Pat 22 [187-188] [Type Bool]: Bind: Ident 23 [187-188] "y"
                                     Expr 24 [191-198] [Type Bool]: Field:
-                                        Expr 25 [191-195] [Type UDT<Item 1>]: Field:
-                                            Expr 26 [191-192] [Type UDT<Item 2>]: Var: Local 9
+                                        Expr 25 [191-195] [Type UDT<"Foo": Item 1>]: Field:
+                                            Expr 26 [191-192] [Type UDT<"Bar": Item 2>]: Var: Local 9
                                             Path(FieldPath { indices: [1] })
                                         Path(FieldPath { indices: [1, 1] })
                         adj: <none>
@@ -1048,7 +1053,7 @@ fn lambda_operation_empty_closure() {
                         name: Ident 1 [28-31] "Foo"
                         generics:
                             0: functor (empty set)
-                        input: Pat 2 [32-48] [Type (Qubit => Unit is 0)]: Bind: Ident 3 [32-34] "op"
+                        input: Pat 2 [32-48] [Type (Qubit => Unit is Param<0>)]: Bind: Ident 3 [32-34] "op"
                         output: Unit
                         functors: empty set
                         body: SpecDecl 4 [18-101]: Impl:
@@ -1131,7 +1136,7 @@ fn lambda_operation_closure() {
                         name: Ident 6 [90-93] "Foo"
                         generics:
                             0: functor (empty set)
-                        input: Pat 7 [94-111] [Type (Unit => Result is 0)]: Bind: Ident 8 [94-96] "op"
+                        input: Pat 7 [94-111] [Type (Unit => Result is Param<0>)]: Bind: Ident 8 [94-96] "op"
                         output: Result
                         functors: empty set
                         body: SpecDecl 9 [80-130]: Impl:
@@ -1215,7 +1220,7 @@ fn lambda_adj() {
                         name: Ident 7 [70-73] "Foo"
                         generics:
                             0: functor (Adj)
-                        input: Pat 8 [74-97] [Type (Qubit => Unit is 0)]: Bind: Ident 9 [74-76] "op"
+                        input: Pat 8 [74-97] [Type (Qubit => Unit is Param<0>)]: Bind: Ident 9 [74-76] "op"
                         output: Unit
                         functors: empty set
                         body: SpecDecl 10 [60-106]: Impl:
@@ -1834,10 +1839,10 @@ fn partial_app_hole_as_callee() {
                     Callable 0 [36-139] (operation):
                         name: Ident 1 [46-50] "Main"
                         input: Pat 2 [50-52] [Type Unit]: Unit
-                        output: (Result)[]
+                        output: Result[]
                         functors: empty set
                         body: SpecDecl 3 [36-139]: Impl:
-                            Block 4 [64-139] [Type (Result)[]]:
+                            Block 4 [64-139] [Type Result[]]:
                                 Stmt 5 [74-87]: Local (Immutable):
                                     Pat 6 [78-79] [Type ?3]: Bind: Ident 7 [78-79] "f"
                                     Expr 8 [82-86] [Type ?3]: Call:
@@ -1848,7 +1853,7 @@ fn partial_app_hole_as_callee() {
                                     Expr 14 [106-110] [Type Result]: Call:
                                         Expr 15 [106-107] [Type ?3]: Var: Local 7
                                         Expr 16 [108-109] [Type Int]: Lit: Int(4)
-                                Stmt 17 [120-133]: Semi: Expr 18 [120-132] [Type Unit]: Return: Expr 19 [127-132] [Type (Result)[]]: Array:
+                                Stmt 17 [120-133]: Semi: Expr 18 [120-132] [Type Unit]: Return: Expr 19 [127-132] [Type Result[]]: Array:
                                     Expr 20 [128-131] [Type Result]: Var: Local 13
                         adj: <none>
                         ctl: <none>
@@ -1980,9 +1985,9 @@ fn nested_params() {
                     Callable 0 [17-55] (function):
                         name: Ident 1 [26-29] "Foo"
                         generics:
-                            0: type
+                            0: type [30-32] "'T"
                             1: functor (empty set)
-                        input: Pat 2 [34-45] [Type (0 => Unit is 1)]: Bind: Ident 3 [34-35] "f"
+                        input: Pat 2 [34-45] [Type (Param<"'T": 0> => Unit is Param<1>)]: Bind: Ident 3 [34-35] "f"
                         output: Unit
                         functors: empty set
                         body: SpecDecl 4 [17-55]: Impl:
@@ -2025,6 +2030,191 @@ fn lambda_with_invalid_free_variable() {
                         body: SpecDecl 14 [58-67]: Impl:
                             Block 15 [58-67] [Type Unit]:
                                 Stmt 16 [58-67]: Expr: Expr 8 [58-67] [Type Unit]: Var: Local 10
+                        adj: <none>
+                        ctl: <none>
+                        ctl-adj: <none>"#]],
+    );
+}
+
+#[test]
+fn duplicate_commas_in_tydef() {
+    check_hir(
+        indoc! {r#"
+            namespace test {
+                newtype Foo = (Int,,);
+            }
+        "#},
+        &expect![[r#"
+            Package:
+                Item 0 [0-45] (Public):
+                    Namespace (Ident 1 [10-14] "test"): Item 1
+                Item 1 [21-43] (Public):
+                    Parent: 0
+                    Type (Ident 0 [29-32] "Foo"): UDT [21-43]:
+                        TyDef [35-42]: Tuple:
+                            TyDef [36-39]: Field:
+                                type: Int
+                            TyDef [40-40]: Field:
+                                type: ?"#]],
+    );
+}
+
+#[test]
+fn duplicate_commas_in_generics() {
+    check_hir(
+        indoc! {r#"
+            namespace test {
+                function Foo<'T,,>(x : 'T) : Unit {}
+            }
+        "#},
+        &expect![[r#"
+            Package:
+                Item 0 [0-59] (Public):
+                    Namespace (Ident 6 [10-14] "test"): Item 1
+                Item 1 [21-57] (Public):
+                    Parent: 0
+                    Callable 0 [21-57] (function):
+                        name: Ident 1 [30-33] "Foo"
+                        generics:
+                            0: type [34-36] "'T"
+                            1: type [37-37] ""
+                        input: Pat 2 [40-46] [Type Param<"'T": 0>]: Bind: Ident 3 [40-41] "x"
+                        output: Unit
+                        functors: empty set
+                        body: SpecDecl 4 [21-57]: Impl:
+                            Block 5 [55-57]: <empty>
+                        adj: <none>
+                        ctl: <none>
+                        ctl-adj: <none>"#]],
+    );
+}
+
+#[test]
+fn duplicate_commas_in_pat() {
+    check_hir(
+        indoc! {r#"
+            namespace test {
+                operation Foo() : Unit {
+                    let (x,,) = (1, 2);
+                }
+            }"#},
+        &expect![[r#"
+            Package:
+                Item 0 [0-81] (Public):
+                    Namespace (Ident 13 [10-14] "test"): Item 1
+                Item 1 [21-79] (Public):
+                    Parent: 0
+                    Callable 0 [21-79] (operation):
+                        name: Ident 1 [31-34] "Foo"
+                        input: Pat 2 [34-36] [Type Unit]: Unit
+                        output: Unit
+                        functors: empty set
+                        body: SpecDecl 3 [21-79]: Impl:
+                            Block 4 [44-79] [Type Unit]:
+                                Stmt 5 [54-73]: Local (Immutable):
+                                    Pat 6 [58-63] [Type (Int, ?)]: Tuple:
+                                        Pat 7 [59-60] [Type Int]: Bind: Ident 8 [59-60] "x"
+                                        Pat 9 [61-61] [Type ?]: Err
+                                    Expr 10 [66-72] [Type (Int, Int)]: Tuple:
+                                        Expr 11 [67-68] [Type Int]: Lit: Int(1)
+                                        Expr 12 [70-71] [Type Int]: Lit: Int(2)
+                        adj: <none>
+                        ctl: <none>
+                        ctl-adj: <none>"#]],
+    );
+}
+
+#[test]
+fn duplicate_commas_in_tuple() {
+    check_hir(
+        indoc! {r#"
+            namespace test {
+                operation Foo() : Unit {
+                    let x = (1,,3);
+                }
+            }"#},
+        &expect![[r#"
+            Package:
+                Item 0 [0-77] (Public):
+                    Namespace (Ident 12 [10-14] "test"): Item 1
+                Item 1 [21-75] (Public):
+                    Parent: 0
+                    Callable 0 [21-75] (operation):
+                        name: Ident 1 [31-34] "Foo"
+                        input: Pat 2 [34-36] [Type Unit]: Unit
+                        output: Unit
+                        functors: empty set
+                        body: SpecDecl 3 [21-75]: Impl:
+                            Block 4 [44-75] [Type Unit]:
+                                Stmt 5 [54-69]: Local (Immutable):
+                                    Pat 6 [58-59] [Type (Int, ?, Int)]: Bind: Ident 7 [58-59] "x"
+                                    Expr 8 [62-68] [Type (Int, ?, Int)]: Tuple:
+                                        Expr 9 [63-64] [Type Int]: Lit: Int(1)
+                                        Expr 10 [65-65] [Type ?]: Err
+                                        Expr 11 [66-67] [Type Int]: Lit: Int(3)
+                        adj: <none>
+                        ctl: <none>
+                        ctl-adj: <none>"#]],
+    );
+}
+
+#[test]
+fn duplicate_commas_in_arg_tuple() {
+    check_hir(
+        indoc! {r#"
+            namespace test {
+                operation Foo(a : Int, b : Int, c : Int) : Int {
+                    Foo(a,,c)
+                }
+            }"#},
+        &expect![[r#"
+            Package:
+                Item 0 [0-95] (Public):
+                    Namespace (Ident 18 [10-14] "test"): Item 1
+                Item 1 [21-93] (Public):
+                    Parent: 0
+                    Callable 0 [21-93] (operation):
+                        name: Ident 1 [31-34] "Foo"
+                        input: Pat 2 [34-61] [Type (Int, Int, Int)]: Tuple:
+                            Pat 3 [35-42] [Type Int]: Bind: Ident 4 [35-36] "a"
+                            Pat 5 [44-51] [Type Int]: Bind: Ident 6 [44-45] "b"
+                            Pat 7 [53-60] [Type Int]: Bind: Ident 8 [53-54] "c"
+                        output: Int
+                        functors: empty set
+                        body: SpecDecl 9 [21-93]: Impl:
+                            Block 10 [68-93] [Type Int]:
+                                Stmt 11 [78-87]: Expr: Expr 12 [78-87] [Type Int]: Call:
+                                    Expr 13 [78-81] [Type ((Int, Int, Int) => Int)]: Var: Item 1
+                                    Expr 14 [81-87] [Type (Int, ?, Int)]: Tuple:
+                                        Expr 15 [82-83] [Type Int]: Var: Local 4
+                                        Expr 16 [84-84] [Type ?]: Err
+                                        Expr 17 [85-86] [Type Int]: Var: Local 8
+                        adj: <none>
+                        ctl: <none>
+                        ctl-adj: <none>"#]],
+    );
+}
+
+#[test]
+fn ignore_item_in_attribute() {
+    check_hir(
+        "namespace Test {
+            @Attr{function Bar() : Unit { Bar }}
+            function Foo() : Unit {}
+        }",
+        &expect![[r#"
+            Package:
+                Item 0 [0-112] (Public):
+                    Namespace (Ident 5 [10-14] "Test"): Item 1
+                Item 1 [29-102] (Public):
+                    Parent: 0
+                    Callable 0 [78-102] (function):
+                        name: Ident 1 [87-90] "Foo"
+                        input: Pat 2 [90-92] [Type Unit]: Unit
+                        output: Unit
+                        functors: empty set
+                        body: SpecDecl 3 [78-102]: Impl:
+                            Block 4 [100-102]: <empty>
                         adj: <none>
                         ctl: <none>
                         ctl-adj: <none>"#]],

@@ -7,7 +7,7 @@ import os
 from datetime import datetime, timezone
 
 # To be updated every time we start a new major.minor version.
-major_minor = "1.0"
+major_minor = "1.2"
 
 # Default to 'dev' builds
 BUILD_TYPE = os.environ.get("BUILD_TYPE") or "dev"
@@ -54,11 +54,18 @@ update_file(
     r'version = "0.0.0"',
     r'version = "{}"'.format(pip_version),
 )
+update_file(
+    os.path.join(root_dir, "widgets/pyproject.toml"),
+    r'version = "0.0.0"',
+    r'version = "{}"'.format(pip_version),
+)
 
+# Publish the jupyterlab extension without the 'pre-release' tagging for rc builds.
+# It is already stable and the prior publishing (and yanking) of release versions causes issues.
 update_file(
     os.path.join(root_dir, "jupyterlab/pyproject.toml"),
     r'version = "0.0.0"',
-    r'version = "{}"'.format(pip_version),
+    r'version = "{}"'.format(pip_version if BUILD_TYPE == "dev" else version_triple),
 )
 
 update_file(

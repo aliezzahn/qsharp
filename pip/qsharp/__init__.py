@@ -1,7 +1,18 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
-from ._qsharp import init, eval, eval_file, run, compile
+from ._qsharp import (
+    init,
+    eval,
+    run,
+    compile,
+    estimate,
+    set_quantum_seed,
+    set_classical_seed,
+    dump_machine,
+    StateDump,
+    ShotResult,
+)
 
 from ._native import Result, Pauli, QSharpError, TargetProfile
 
@@ -19,11 +30,16 @@ except NameError:
 __all__ = [
     "init",
     "eval",
-    "eval_file",
     "run",
+    "set_quantum_seed",
+    "set_classical_seed",
+    "dump_machine",
     "compile",
+    "estimate",
     "Result",
     "Pauli",
     "QSharpError",
     "TargetProfile",
+    "StateDump",
+    "ShotResult",
 ]

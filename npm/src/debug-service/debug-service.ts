@@ -2,27 +2,33 @@
 // Licensed under the MIT License.
 
 import type {
-  IBreakpointSpan,
   DebugService,
+  IBreakpointSpan,
+  IQuantumState,
   IStackFrame,
   IStructStepResult,
   IVariable,
-  IQuantumState,
 } from "../../lib/node/qsc_wasm.cjs";
+import { TargetProfile } from "../browser.js";
 import { eventStringToMsg } from "../compiler/common.js";
-import { IQscEventTarget, QscEvents, makeEvent } from "../compiler/events.js";
+import {
+  IQscEventTarget,
+  QscEventData,
+  QscEvents,
+  makeEvent,
+} from "../compiler/events.js";
 import { log } from "../log.js";
-import { mapUtf8UnitsToUtf16Units } from "../vsdiagnostic.js";
-import { IServiceProxy } from "../worker-proxy.js";
+import { IServiceProxy, ServiceProtocol } from "../workers/common.js";
 type QscWasm = typeof import("../../lib/node/qsc_wasm.cjs");
 
 // These need to be async/promise results for when communicating across a WebWorker, however
 // for running the debugger in the same thread the result will be synchronous (a resolved promise).
 export interface IDebugService {
   loadSource(
-    path: string,
-    source: string,
+    sources: [string, string][],
+    target: TargetProfile,
     entry: string | undefined,
+    language_features: string[],
   ): Promise<string>;
   getBreakpoints(path: string): Promise<IBreakpointSpan[]>;
   getLocalVariables(): Promise<Array<IVariable>>;
@@ -53,9 +59,6 @@ export class QSharpDebugService implements IDebugService {
   private wasm: QscWasm;
   private debugService: DebugService;
 
-  // We need to keep a copy of the code for mapping diagnostics to utf16 offsets
-  private code: { [uri: string]: string } = {};
-
   constructor(wasm: QscWasm) {
     log.info("Constructing a QSharpDebugService instance");
     this.wasm = wasm;
@@ -63,46 +66,21 @@ export class QSharpDebugService implements IDebugService {
   }
 
   async loadSource(
-    path: string,
-    source: string,
+    sources: [string, string][],
+    target: TargetProfile,
     entry: string | undefined,
+    language_features: string[],
   ): Promise<string> {
-    this.code[path] = source;
-    return this.debugService.load_source(path, source, entry);
+    return this.debugService.load_source(
+      sources,
+      target,
+      entry,
+      language_features,
+    );
   }
 
   async getStackFrames(): Promise<IStackFrame[]> {
-    const stack_frame_list = this.debugService.get_stack_frames();
-
-    const stack_frames: IStackFrame[] = await Promise.all(
-      stack_frame_list.frames.map(async (frame) => {
-        // get any missing sources if possible
-        if (!(frame.path in this.code)) {
-          const content = await this.wasm.get_library_source_content(
-            frame.path,
-          );
-          if (content) {
-            this.code[frame.path] = content;
-          }
-        }
-        if (frame.path in this.code) {
-          const mappedSpan = mapUtf8UnitsToUtf16Units(
-            [frame.lo, frame.hi],
-            this.code[frame.path],
-          );
-          return {
-            ...frame,
-            lo: mappedSpan[frame.lo],
-            hi: mappedSpan[frame.hi],
-          };
-        } else {
-          // We don't have a source file for this frame,
-          // and we couldn't load it, so just return it as-is
-          return frame;
-        }
-      }),
-    );
-    return stack_frames;
+    return this.debugService.get_stack_frames().frames;
   }
 
   async evalNext(
@@ -142,22 +120,7 @@ export class QSharpDebugService implements IDebugService {
   }
 
   async getBreakpoints(path: string): Promise<IBreakpointSpan[]> {
-    const breakpoint_list = this.debugService.get_breakpoints(path);
-    // Get a map of the Rust source positions to the JavaScript source positions
-    const positions: number[] = [];
-    breakpoint_list.spans.forEach((span: IBreakpointSpan) => {
-      positions.push(span.lo);
-      positions.push(span.hi);
-    });
-    const positionMap = mapUtf8UnitsToUtf16Units(positions, this.code[path]);
-    const breakpoint_spans: IBreakpointSpan[] = breakpoint_list.spans.map(
-      (span) => ({
-        id: span.id,
-        lo: positionMap[span.lo],
-        hi: positionMap[span.hi],
-      }),
-    );
-    return breakpoint_spans;
+    return this.debugService.get_breakpoints(path).spans;
   }
 
   async captureQuantumState(): Promise<Array<IQuantumState>> {
@@ -190,7 +153,10 @@ export function onCompilerEvent(msg: string, eventTarget: IQscEventTarget) {
       qscEvent = makeEvent("Message", qscMsg.message);
       break;
     case "DumpMachine":
-      qscEvent = makeEvent("DumpMachine", qscMsg.state);
+      qscEvent = makeEvent("DumpMachine", {
+        state: qscMsg.state,
+        stateLatex: qscMsg.stateLatex,
+      });
       break;
     case "Result":
       qscEvent = makeEvent("Result", qscMsg.result);
@@ -202,3 +168,24 @@ export function onCompilerEvent(msg: string, eventTarget: IQscEventTarget) {
   log.debug("worker dispatching event " + JSON.stringify(qscEvent));
   eventTarget.dispatchEvent(qscEvent);
 }
+
+/** The protocol definition to allow running the debugger in a worker. */
+export const debugServiceProtocol: ServiceProtocol<
+  IDebugService,
+  QscEventData
+> = {
+  class: QSharpDebugService,
+  methods: {
+    loadSource: "request",
+    getBreakpoints: "request",
+    getLocalVariables: "request",
+    captureQuantumState: "request",
+    getStackFrames: "request",
+    evalContinue: "requestWithProgress",
+    evalNext: "requestWithProgress",
+    evalStepIn: "requestWithProgress",
+    evalStepOut: "requestWithProgress",
+    dispose: "request",
+  },
+  eventNames: ["DumpMachine", "Message", "Result"],
+};

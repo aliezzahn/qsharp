@@ -12,8 +12,8 @@ namespace Microsoft.Quantum.Math {
     /// # Summary
     /// Represents the ratio of the circumference of a circle to its diameter.
     ///
-    /// # Ouptut
-    /// A double-precision approximation of the the circumference of a circle
+    /// # Output
+    /// A double-precision approximation of the circumference of a circle
     /// to its diameter, π ≈ 3.14159265358979323846.
     ///
     /// # See Also
@@ -26,7 +26,7 @@ namespace Microsoft.Quantum.Math {
     /// Returns the natural logarithmic base to double-precision.
     ///
     /// # Output
-    /// A double-precision approximation of the natural logarithic base,
+    /// A double-precision approximation of the natural logarithmic base,
     /// e ≈ 2.7182818284590452354.
     ///
     /// # See Also
@@ -43,6 +43,57 @@ namespace Microsoft.Quantum.Math {
     function LogOf2 () : Double
     {
         0.6931471805599453
+    }
+
+    //
+    // Special numbers in IEEE floating-point representation
+    //
+
+    /// # Summary
+    /// Returns whether a given floating-point value is not a number (i.e. is
+    /// NaN).
+    ///
+    /// # Input
+    /// ## d
+    /// A floating-point value to be checked.
+    ///
+    /// # Output
+    /// `true` if and only if `d` is not a number.
+    function IsNaN(d : Double) : Bool {
+        return d != d;
+    }
+
+    /// # Summary
+    /// Returns whether a given floating-point value is either positive or
+    /// negative infinity.
+    ///
+    /// # Input
+    /// ## d
+    /// The floating-point value to be checked.
+    ///
+    /// # Output
+    /// `true` if and only if `d` is either positive or negative infinity.
+    ///
+    /// # Remarks
+    /// `NaN` is not a number, and is thus neither a finite number nor
+    /// is it infinite. As such, `IsInfinite(0.0 / 0.0)` returns `false`.
+    /// To check if a value is `NaN`, use `IsNaN(d)`.
+    ///
+    /// Note that even though this function returns `true` for both
+    /// positive and negative infinities, these values can still be
+    /// discriminated by checking `d > 0.0` and `d < 0.0`.
+    ///
+    /// # Example
+    /// ```qsharp
+    /// Message($"{IsInfinite(42.0)}"); // false
+    /// Message($"{IsInfinite(0.0 / 0.0)}"); // false
+    /// Message($"{IsInfinite(-1.0 / 0.0}"); // true
+    /// ```
+    ///
+    /// # See Also
+    /// - Microsoft.Quantum.Math.IsNaN
+    function IsInfinite(d : Double) : Bool {
+        return d == 1.0 / 0.0 or d == -1.0 / 0.0;
     }
 
     //
@@ -684,6 +735,47 @@ namespace Microsoft.Quantum.Math {
         size
     }
 
+    /// # Summary
+    /// For a non-zero integer `a`, returns the number of trailing zero bits
+    /// in the binary representation of `a`.
+    function TrailingZeroCountI (a : Int) : Int {
+        Fact(a != 0, "TrailingZeroCountI: `a` cannot be 0.");
+
+        mutable count = 0;
+        mutable n = a;
+        while n &&& 1 == 0 {
+            set count += 1;
+            set n >>>= 1;
+        }
+
+        count
+    }
+
+    /// # Summary
+    /// For a non-zero integer `a`, returns the number of trailing zero bits
+    /// in the binary representation of `a`.
+    function TrailingZeroCountL (a : BigInt) : Int {
+        Fact(a != 0L, "TrailingZeroCountL: `a` cannot be 0.");
+
+        mutable count = 0;
+        mutable n = a;
+        while n &&& 1L == 0L {
+            set count += 1;
+            set n >>>= 1;
+        }
+
+        count
+    }
+
+    /// # Summary
+    /// Returns the number of 1 bits in the binary representation of integer `n`.
+    function HammingWeightI (n : Int) : Int {
+        let i1 = n - ((n >>> 1) &&& 0x5555555555555555);
+        let i2 = (i1 &&& 0x3333333333333333) + ((i1 >>> 2) &&& 0x3333333333333333);
+        // Multiplication may overflow. See https://github.com/microsoft/qsharp/issues/828
+        (((i2 + (i2 >>> 4)) &&& 0xF0F0F0F0F0F0F0F) * 0x101010101010101) >>> 56
+    }
+
     //
     // Combinatorics
     //
@@ -1184,7 +1276,7 @@ namespace Microsoft.Quantum.Math {
 
     /// # Summary
     /// Internal. Since it is easiest to define the power of two complex numbers
-    /// in cartesian form as returning in polar form, we define that here, then
+    /// in Cartesian form as returning in polar form, we define that here, then
     /// convert as needed.
     /// Note that this is a multi-valued function, but only one value is returned.
     internal function PowCAsCP(base : Complex, power : Complex) : ComplexPolar {
@@ -1197,7 +1289,7 @@ namespace Microsoft.Quantum.Math {
         // ㏑(a+b𝑖) = ln(|a+b𝑖|) + 𝑖⋅arg(a+b𝑖) = ln(baseNorm) + 𝑖⋅baseArg
         // Therefore
         // base^power = (a+b𝑖)^(c+d𝑖) = 𝑒^( (c+d𝑖)⋅㏑(a+b𝑖) ) =
-        // = 𝑒^( (c+d𝑖)⋅(ln(baseNorm)+𝑖⋅baseArg) ) = 
+        // = 𝑒^( (c+d𝑖)⋅(ln(baseNorm)+𝑖⋅baseArg) ) =
         // = 𝑒^( (c⋅ln(baseNorm) - d⋅baseArg) + 𝑖⋅(c⋅baseArg + d⋅ln(baseNorm)) )
         // magnitude = 𝑒^((c⋅ln(baseNorm) - d⋅baseArg)) = baseNorm^c / 𝑒^(d⋅baseArg)
         // angle = d⋅ln(baseNorm) + c⋅baseArg

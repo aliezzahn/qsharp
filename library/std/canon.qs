@@ -253,7 +253,7 @@ namespace Microsoft.Quantum.Canon {
     /// Array of qubits whose parity is to be computed and stored.
     ///
     /// # Remarks
-    /// This operation transforms the state of its input asd
+    /// This operation transforms the state of its input as
     /// $$
     /// \begin{align}
     ///     \ket{q_0} \ket{q_1} \cdots \ket{q_{n - 1}} & \mapsto
@@ -474,6 +474,97 @@ namespace Microsoft.Quantum.Canon {
         } apply {
             Controlled oracle(controlSubregister, target);
         }
+    }
+
+    /// # Summary
+    /// Applies Quantum Fourier Transform (QFT) to a little-endian quantum register.
+    ///
+    /// # Description
+    /// Applies QFT to a little-endian register `qs` of length n
+    /// containing |x₁⟩⊗|x₂⟩⊗…⊗|xₙ⟩. The qs[0] contains the
+    /// least significant bit xₙ. The state of qs[0] becomes
+    /// (|0⟩+𝑒^(2π𝑖[0.xₙ])|1⟩)/sqrt(2) after the operation.
+    ///
+    /// # Input
+    /// ## qs
+    /// Quantum register in a little-endian format to which the QFT is applied.
+    ///
+    /// # Reference
+    ///  - [Quantum Fourier transform](https://en.wikipedia.org/wiki/Quantum_Fourier_transform)
+    operation ApplyQFT (qs : Qubit[]) : Unit is Adj + Ctl {
+        let length = Length(qs);
+        Fact(length >= 1, "ApplyQFT: Length(qs) must be at least 1.");
+        for i in length-1..-1..0 {
+            H(qs[i]);
+            for j in 0..i-1 {
+                Controlled R1Frac([qs[i]], (1, j+1, qs[i-j-1]));
+            }
+        }
+    }
+
+    /// # Summary
+    /// Uses SWAP gates to reverse the order of the qubits in a register.
+    ///
+    /// # Input
+    /// ## register
+    /// The qubits order of which should be reversed using SWAP gates
+    operation SwapReverseRegister (register : Qubit[]) : Unit is Adj + Ctl {
+        let length = Length(register);
+        for i in 0 .. length/2 - 1 {
+            SWAP(register[i], register[(length - i) - 1]);
+        }
+    }
+
+    /// # Summary
+    /// Applies a bitwise-XOR operation between a classical integer and an
+    /// integer represented by a register of qubits.
+    ///
+    /// # Description
+    /// Applies `X` operations to qubits in a little-endian register based on
+    /// 1 bits in an integer.
+    ///
+    /// Let us denote `value` by a and let y be an unsigned integer encoded in `target`,
+    /// then `ApplyXorInPlace` performs an operation given by the following map:
+    /// |y⟩ ↦ |y ⊕ a⟩, where ⊕ is the bitwise exclusive OR operator.
+    operation ApplyXorInPlace(value : Int, target : Qubit[]) : Unit is Adj + Ctl {
+        body (...) {
+            Fact(value >= 0, "`value` must be non-negative.");
+            mutable runningValue = value;
+            for q in target {
+                if (runningValue &&& 1) != 0 {
+                    X(q);
+                }
+                set runningValue >>>= 1;
+            }
+            Fact(runningValue == 0, "value is too large");
+        }
+        adjoint self;
+    }
+
+    /// # Summary
+    /// Applies a bitwise-XOR operation between a classical integer and an
+    /// integer represented by a register of qubits.
+    ///
+    /// # Description
+    /// Applies `X` operations to qubits in a little-endian register based on
+    /// 1 bits in an integer.
+    ///
+    /// Let us denote `value` by a and let y be an unsigned integer encoded in `target`,
+    /// then `ApplyXorInPlace` performs an operation given by the following map:
+    /// |y⟩ ↦ |y ⊕ a⟩, where ⊕ is the bitwise exclusive OR operator.
+    operation ApplyXorInPlaceL(value : BigInt, target : Qubit[]) : Unit is Adj + Ctl {
+        body (...) {
+            Fact(value >= 0L, "`value` must be non-negative.");
+            mutable runningValue = value;
+            for q in target {
+                if (runningValue &&& 1L) != 0L {
+                    X(q);
+                }
+                set runningValue >>>= 1;
+            }
+            Fact(runningValue == 0L, "`value` is too large.");
+        }
+        adjoint self;
     }
 
 }

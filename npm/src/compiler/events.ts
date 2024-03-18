@@ -2,15 +2,14 @@
 // Licensed under the MIT License.
 
 import { ShotResult, Dump, Result } from "./common.js";
-import { TelemetryEvent, log } from "../log.js";
-import { IServiceEventTarget } from "../worker-proxy.js";
+import { log } from "../log.js";
+import { IServiceEventTarget } from "../workers/common.js";
 
 // Create strongly typed compiler events
 export type QscEventData =
   | { type: "Message"; detail: string }
-  | { type: "DumpMachine"; detail: Dump }
-  | { type: "Result"; detail: Result }
-  | { type: "telemetry-event"; detail: TelemetryEvent };
+  | { type: "DumpMachine"; detail: { state: Dump; stateLatex: string } }
+  | { type: "Result"; detail: Result };
 
 export type QscEvents = Event & QscEventData;
 
@@ -50,8 +49,7 @@ export class QscEventTarget implements IQscEventTarget {
   private eventTarget = new EventTarget();
   private results: ShotResult[] = [];
   private shotActive = false;
-  private animationFrameId = 0;
-  private supportsUiRefresh = false;
+  private animationFrameId: any = 0;
 
   // Overrides for the base EventTarget methods to limit to expected event types
   addEventListener<T extends QscUiEvents["type"]>(
@@ -77,9 +75,6 @@ export class QscEventTarget implements IQscEventTarget {
    * @param captureEvents Set to true if this instance should record events internally
    */
   constructor(captureEvents: boolean) {
-    this.supportsUiRefresh =
-      typeof globalThis.requestAnimationFrame === "function";
-
     if (captureEvents) {
       this.addEventListener("Message", (ev) => this.onMessage(ev.detail));
       this.addEventListener("DumpMachine", (ev) =>
@@ -98,11 +93,15 @@ export class QscEventTarget implements IQscEventTarget {
     this.queueUiRefresh();
   }
 
-  private onDumpMachine(dump: Dump) {
+  private onDumpMachine(detail: { state: Dump; stateLatex: string }) {
     this.ensureActiveShot();
 
     const shotIdx = this.results.length - 1;
-    this.results[shotIdx].events.push({ type: "DumpMachine", state: dump });
+    this.results[shotIdx].events.push({
+      type: "DumpMachine",
+      state: detail.state,
+      stateLatex: detail.stateLatex,
+    });
 
     this.queueUiRefresh();
   }
@@ -127,10 +126,10 @@ export class QscEventTarget implements IQscEventTarget {
   }
 
   private queueUiRefresh() {
-    if (this.supportsUiRefresh && !this.animationFrameId) {
-      this.animationFrameId = requestAnimationFrame(() => {
+    if (!this.animationFrameId) {
+      this.animationFrameId = setTimeout(() => {
         this.onUiRefresh();
-      });
+      }, 50); // 20 fps is plenty for the rendering we do
     }
   }
 

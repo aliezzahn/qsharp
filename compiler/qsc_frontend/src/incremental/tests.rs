@@ -2,21 +2,32 @@
 // Licensed under the MIT License.
 
 use super::{Compiler, Increment};
-use crate::compile::{self, CompileUnit, PackageStore, TargetProfile};
+use crate::{
+    compile::{self, CompileUnit, PackageStore, RuntimeCapabilityFlags},
+    incremental::Error,
+};
 use expect_test::{expect, Expect};
 use indoc::indoc;
 use miette::Diagnostic;
+use qsc_data_structures::language_features::LanguageFeatures;
 use std::fmt::Write;
 
+#[allow(clippy::too_many_lines)]
 #[test]
 fn one_callable() {
     let store = PackageStore::new(compile::core());
-    let mut compiler = Compiler::new(&store, vec![], TargetProfile::Full);
+    let mut compiler = Compiler::new(
+        &store,
+        vec![],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     let unit = compiler
         .compile_fragments(
             &mut CompileUnit::default(),
             "test_1",
             "namespace Foo { operation Main() : Unit {} }",
+            fail_on_error,
         )
         .expect("compilation should succeed");
 
@@ -35,6 +46,61 @@ fn one_callable() {
             node_id:2,node_id:5,node_id:8,
             terms:
             node_id:6,node_id:10,
+            locals:
+            Locals {
+                scopes: [
+                    Scope {
+                        span: Span {
+                            lo: 0,
+                            hi: 4294967295,
+                        },
+                        kind: Block,
+                        opens: {},
+                        tys: {},
+                        terms: {},
+                        vars: {},
+                        ty_vars: {},
+                    },
+                    Scope {
+                        span: Span {
+                            lo: 0,
+                            hi: 44,
+                        },
+                        kind: Namespace(
+                            "Foo",
+                        ),
+                        opens: {},
+                        tys: {},
+                        terms: {},
+                        vars: {},
+                        ty_vars: {},
+                    },
+                    Scope {
+                        span: Span {
+                            lo: 16,
+                            hi: 42,
+                        },
+                        kind: Callable,
+                        opens: {},
+                        tys: {},
+                        terms: {},
+                        vars: {},
+                        ty_vars: {},
+                    },
+                    Scope {
+                        span: Span {
+                            lo: 40,
+                            hi: 42,
+                        },
+                        kind: Block,
+                        opens: {},
+                        tys: {},
+                        terms: {},
+                        vars: {},
+                        ty_vars: {},
+                    },
+                ],
+            }
             hir:
             Package:
                 Item 0 [0-44] (Public):
@@ -58,9 +124,19 @@ fn one_callable() {
 #[test]
 fn one_statement() {
     let store = PackageStore::new(compile::core());
-    let mut compiler = Compiler::new(&store, vec![], TargetProfile::Full);
+    let mut compiler = Compiler::new(
+        &store,
+        vec![],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     let unit = compiler
-        .compile_fragments(&mut CompileUnit::default(), "test_1", "use q = Qubit();")
+        .compile_fragments(
+            &mut CompileUnit::default(),
+            "test_1",
+            "use q = Qubit();",
+            fail_on_error,
+        )
         .expect("compilation should succeed");
 
     check_unit(
@@ -75,6 +151,30 @@ fn one_statement() {
             node_id:3,
             terms:
             node_id:1,node_id:2,node_id:3,node_id:4,
+            locals:
+            Locals {
+                scopes: [
+                    Scope {
+                        span: Span {
+                            lo: 0,
+                            hi: 4294967295,
+                        },
+                        kind: Block,
+                        opens: {},
+                        tys: {},
+                        terms: {},
+                        vars: {
+                            "q": (
+                                16,
+                                NodeId(
+                                    3,
+                                ),
+                            ),
+                        },
+                        ty_vars: {},
+                    },
+                ],
+            }
             hir:
             Package:
                 Stmt 0 [0-16]: Qubit (Fresh)
@@ -87,18 +187,57 @@ fn one_statement() {
 #[test]
 fn parse_error() {
     let store = PackageStore::new(compile::core());
-    let mut compiler = Compiler::new(&store, vec![], TargetProfile::Full);
+    let mut compiler = Compiler::new(
+        &store,
+        vec![],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     let errors = compiler
-        .compile_fragments(&mut CompileUnit::default(), "test_1", "}}")
+        .compile_fragments(&mut CompileUnit::default(), "test_1", "}}", fail_on_error)
         .expect_err("should fail");
 
-    assert!(!errors.is_empty());
+    expect![[r#"
+        [
+            WithSource {
+                sources: [
+                    Source {
+                        name: "test_1",
+                        contents: "}}",
+                        offset: 0,
+                    },
+                ],
+                error: Error(
+                    Parse(
+                        Error(
+                            Token(
+                                Eof,
+                                Close(
+                                    Brace,
+                                ),
+                                Span {
+                                    lo: 0,
+                                    hi: 1,
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            },
+        ]
+    "#]]
+    .assert_debug_eq(&errors);
 }
 
 #[test]
 fn conditional_compilation_not_available() {
     let store = PackageStore::new(compile::core());
-    let mut compiler = Compiler::new(&store, vec![], TargetProfile::Full);
+    let mut compiler = Compiler::new(
+        &store,
+        vec![],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     let errors = compiler
         .compile_fragments(
             &mut CompileUnit::default(),
@@ -111,6 +250,7 @@ fn conditional_compilation_not_available() {
                     Dropped();
                 }
             "},
+            fail_on_error,
         )
         .expect_err("should fail");
 
@@ -120,28 +260,39 @@ fn conditional_compilation_not_available() {
 #[test]
 fn errors_across_multiple_lines() {
     let mut store = PackageStore::new(compile::core());
-    let std = compile::std(&store, TargetProfile::Full);
+    let std = compile::std(&store, RuntimeCapabilityFlags::all());
     let std_id = store.insert(std);
-    let mut compiler = Compiler::new(&store, [std_id], TargetProfile::Full);
+    let mut compiler = Compiler::new(
+        &store,
+        [std_id],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     let mut unit = CompileUnit::default();
     compiler
         .compile_fragments(
             &mut unit,
             "line_1",
             "namespace Other { operation DumpMachine() : Unit { } }",
+            fail_on_error,
         )
         .expect("should succeed");
 
     compiler
-        .compile_fragments(&mut unit, "line_2", "open Other;")
+        .compile_fragments(&mut unit, "line_2", "open Other;", fail_on_error)
         .expect("should succeed");
 
     compiler
-        .compile_fragments(&mut unit, "line_3", "open Microsoft.Quantum.Diagnostics;")
+        .compile_fragments(
+            &mut unit,
+            "line_3",
+            "open Microsoft.Quantum.Diagnostics;",
+            fail_on_error,
+        )
         .expect("should succeed");
 
     let errors = compiler
-        .compile_fragments(&mut unit, "line_4", "DumpMachine()")
+        .compile_fragments(&mut unit, "line_4", "DumpMachine()", fail_on_error)
         .expect_err("should fail");
 
     // Here we're validating that the compiler is able to return
@@ -177,6 +328,134 @@ fn errors_across_multiple_lines() {
     .assert_debug_eq(&labels);
 }
 
+#[test]
+fn continue_after_parse_error() {
+    let store = PackageStore::new(compile::core());
+    let mut compiler = Compiler::new(
+        &store,
+        vec![],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
+    let mut errors = Vec::new();
+
+    compiler
+        .compile_fragments(
+            &mut CompileUnit::default(),
+            "test_1",
+            "operation Main() : Foo {
+            }}",
+            |e| -> Result<(), ()> {
+                errors.extend(e);
+                Ok(())
+            },
+        )
+        .expect("compile_fragments should succeed");
+
+    expect![[r#"
+        [
+            WithSource {
+                sources: [
+                    Source {
+                        name: "test_1",
+                        contents: "operation Main() : Foo {\n            }}",
+                        offset: 0,
+                    },
+                ],
+                error: Error(
+                    Parse(
+                        Error(
+                            Token(
+                                Eof,
+                                Close(
+                                    Brace,
+                                ),
+                                Span {
+                                    lo: 38,
+                                    hi: 39,
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            },
+            WithSource {
+                sources: [
+                    Source {
+                        name: "test_1",
+                        contents: "operation Main() : Foo {\n            }}",
+                        offset: 0,
+                    },
+                ],
+                error: Error(
+                    Resolve(
+                        NotFound(
+                            "Foo",
+                            Span {
+                                lo: 19,
+                                hi: 22,
+                            },
+                        ),
+                    ),
+                ),
+            },
+        ]
+    "#]]
+    .assert_debug_eq(&errors);
+}
+
+#[test]
+fn continue_after_lower_error() {
+    let store = PackageStore::new(compile::core());
+    let mut compiler = Compiler::new(
+        &store,
+        vec![],
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
+    let mut unit = CompileUnit::default();
+
+    let mut errors = Vec::new();
+
+    compiler
+        .compile_fragments(
+            &mut unit,
+            "test_1",
+            "operation A(q : Qubit) : Unit is Adj {
+                adjoint ... {}
+            }",
+            |e| -> Result<(), ()> {
+                errors = e;
+                Ok(())
+            },
+        )
+        .expect("compile_fragments should succeed");
+
+    expect![[r#"
+        [
+            WithSource {
+                sources: [
+                    Source {
+                        name: "test_1",
+                        contents: "operation A(q : Qubit) : Unit is Adj {\n                adjoint ... {}\n            }",
+                        offset: 0,
+                    },
+                ],
+                error: Error(
+                    Lower(
+                        MissingBody(
+                            Span {
+                                lo: 0,
+                                hi: 83,
+                            },
+                        ),
+                    ),
+                ),
+            },
+        ]
+    "#]].assert_debug_eq(&errors);
+}
+
 fn check_unit(expect: &Expect, actual: &Increment) {
     let ast = format!("ast:\n{}", actual.ast.package);
 
@@ -203,8 +482,20 @@ fn check_unit(expect: &Expect, actual: &Increment) {
                 output
             })
     );
+    let locals = format!("\nlocals:\n{:#?}", actual.ast.locals);
 
     let hir = format!("\nhir:\n{}", actual.hir);
 
-    expect.assert_eq(&[ast, names, terms, hir].into_iter().collect::<String>());
+    expect.assert_eq(
+        &[ast, names, terms, locals, hir]
+            .into_iter()
+            .collect::<String>(),
+    );
+}
+
+fn fail_on_error(errors: Vec<Error>) -> Result<(), Vec<Error>> {
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(())
 }

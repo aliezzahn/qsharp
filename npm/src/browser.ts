@@ -4,23 +4,29 @@
 // This module is the entry point for browser environments. For Node.js environment,
 // the "./main.js" module is the entry point.
 
-import initWasm, * as wasm from "../lib/web/qsc_wasm.js";
-import { Compiler, ICompiler, ICompilerWorker } from "./compiler/compiler.js";
-import { createCompilerProxy } from "./compiler/worker-proxy.js";
+import * as wasm from "../lib/web/qsc_wasm.js";
+import initWasm, { TargetProfile } from "../lib/web/qsc_wasm.js";
+import {
+  Compiler,
+  ICompiler,
+  ICompilerWorker,
+  compilerProtocol,
+} from "./compiler/compiler.js";
 import {
   IDebugService,
   IDebugServiceWorker,
   QSharpDebugService,
+  debugServiceProtocol,
 } from "./debug-service/debug-service.js";
-import { createDebugServiceProxy } from "./debug-service/worker-proxy.js";
 import {
   ILanguageService,
   ILanguageServiceWorker,
   QSharpLanguageService,
+  languageServiceProtocol,
   qsharpLibraryUriScheme,
 } from "./language-service/language-service.js";
-import { createLanguageServiceProxy } from "./language-service/worker-proxy.js";
 import { LogLevel, log } from "./log.js";
+import { createProxy } from "./workers/browser.js";
 
 export { qsharpLibraryUriScheme };
 
@@ -97,35 +103,25 @@ export async function getDebugService(): Promise<IDebugService> {
   return new QSharpDebugService(wasm);
 }
 
+export async function getProjectLoader(
+  readFile: (path: string) => Promise<string | null>,
+  loadDirectory: (path: string) => Promise<[string, number][]>,
+  getManifest: (path: string) => Promise<{
+    manifestDirectory: string;
+  } | null>,
+): Promise<wasm.ProjectLoader> {
+  await instantiateWasm();
+  return new wasm.ProjectLoader(readFile, loadDirectory, getManifest);
+}
+
 // Create the debugger inside a WebWorker and proxy requests.
 // If the Worker was already created via other means and is ready to receive
 // messages, then the worker may be passed in and it will be initialized.
 export function getDebugServiceWorker(
-  workerArg: string | Worker,
+  worker: string | Worker,
 ): IDebugServiceWorker {
   if (!wasmModule) throw "Wasm module must be loaded first";
-
-  // Create or use the WebWorker
-  const worker =
-    typeof workerArg === "string" ? new Worker(workerArg) : workerArg;
-
-  // Send it the Wasm module to instantiate
-  worker.postMessage({
-    type: "init",
-    wasmModule,
-    qscLogLevel: log.getLogLevel(),
-  });
-
-  // If you lose the 'this' binding, some environments have issues
-  const postMessage = worker.postMessage.bind(worker);
-  const onTerminate = () => worker.terminate();
-
-  // Create the proxy which will forward method calls to the worker
-  const proxy = createDebugServiceProxy(postMessage, onTerminate);
-
-  // Let proxy handle response and event messages from the worker
-  worker.onmessage = (ev) => proxy.onMsgFromWorker(ev.data);
-  return proxy;
+  return createProxy(worker, wasmModule, debugServiceProtocol);
 }
 
 export async function getCompiler(): Promise<ICompiler> {
@@ -136,66 +132,30 @@ export async function getCompiler(): Promise<ICompiler> {
 // Create the compiler inside a WebWorker and proxy requests.
 // If the Worker was already created via other means and is ready to receive
 // messages, then the worker may be passed in and it will be initialized.
-export function getCompilerWorker(workerArg: string | Worker): ICompilerWorker {
+export function getCompilerWorker(worker: string | Worker): ICompilerWorker {
   if (!wasmModule) throw "Wasm module must be loaded first";
-
-  // Create or use the WebWorker
-  const worker =
-    typeof workerArg === "string" ? new Worker(workerArg) : workerArg;
-
-  // Send it the Wasm module to instantiate
-  worker.postMessage({
-    type: "init",
-    wasmModule,
-    qscLogLevel: log.getLogLevel(),
-  });
-
-  // If you lose the 'this' binding, some environments have issues
-  const postMessage = worker.postMessage.bind(worker);
-  const onTerminate = () => worker.terminate();
-
-  // Create the proxy which will forward method calls to the worker
-  const proxy = createCompilerProxy(postMessage, onTerminate);
-
-  // Let proxy handle response and event messages from the worker
-  worker.onmessage = (ev) => proxy.onMsgFromWorker(ev.data);
-  return proxy;
+  return createProxy(worker, wasmModule, compilerProtocol);
 }
 
-export async function getLanguageService(): Promise<ILanguageService> {
+export async function getLanguageService(
+  readFile?: (uri: string) => Promise<string | null>,
+  listDir?: (uri: string) => Promise<[string, number][]>,
+  getManifest?: (uri: string) => Promise<{
+    manifestDirectory: string;
+  } | null>,
+): Promise<ILanguageService> {
   await instantiateWasm();
-  return new QSharpLanguageService(wasm);
+  return new QSharpLanguageService(wasm, readFile, listDir, getManifest);
 }
 
 // Create the compiler inside a WebWorker and proxy requests.
 // If the Worker was already created via other means and is ready to receive
 // messages, then the worker may be passed in and it will be initialized.
 export function getLanguageServiceWorker(
-  workerArg: string | Worker,
+  worker: string | Worker,
 ): ILanguageServiceWorker {
   if (!wasmModule) throw "Wasm module must be loaded first";
-
-  // Create or use the WebWorker
-  const worker =
-    typeof workerArg === "string" ? new Worker(workerArg) : workerArg;
-
-  // Send it the Wasm module to instantiate
-  worker.postMessage({
-    type: "init",
-    wasmModule,
-    qscLogLevel: log.getLogLevel(),
-  });
-
-  // If you lose the 'this' binding, some environments have issues
-  const postMessage = worker.postMessage.bind(worker);
-  const onTerminate = () => worker.terminate();
-
-  // Create the proxy which will forward method calls to the worker
-  const proxy = createLanguageServiceProxy(postMessage, onTerminate);
-
-  // Let proxy handle response and event messages from the worker
-  worker.onmessage = (ev) => proxy.onMsgFromWorker(ev.data);
-  return proxy;
+  return createProxy(worker, wasmModule, languageServiceProtocol);
 }
 
 export { type Dump, type ShotResult } from "./compiler/common.js";
@@ -217,11 +177,19 @@ export {
   type Question,
 } from "./katas.js";
 export { default as samples } from "./samples.generated.js";
-export { type VSDiagnostic } from "./vsdiagnostic.js";
-export { log, type LogLevel };
+export { log, type LogLevel, type TargetProfile };
 export type { ICompilerWorker, ICompiler };
 export type { ILanguageServiceWorker, ILanguageService };
 export type { IDebugServiceWorker, IDebugService };
-export type { IBreakpointSpan, IStackFrame } from "../lib/web/qsc_wasm.js";
+export type {
+  IBreakpointSpan,
+  IStackFrame,
+  IPosition,
+  IRange,
+  ILocation,
+  VSDiagnostic,
+} from "../lib/web/qsc_wasm.js";
 export { type IStructStepResult, StepResultId } from "../lib/web/qsc_wasm.js";
 export { type LanguageServiceEvent } from "./language-service/language-service.js";
+
+export * as utils from "./utils.js";
