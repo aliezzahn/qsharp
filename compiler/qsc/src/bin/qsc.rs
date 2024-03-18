@@ -115,7 +115,10 @@ fn main() -> miette::Result<ExitCode> {
         for map in d {
             let (len, count) = *map.1;
             if len > 100 && count < (len / 20) {
-                eprintln!("{} is sparse, len={len}, count={count}", map.0);
+                eprintln!(
+                    "the IndexMap used in {} is sparse, len={len}, count={count}",
+                    map.0
+                );
             }
         }
     });

@@ -75,10 +75,12 @@ impl<K: Into<usize>, V> IndexMap<K, V> {
             if self.values.capacity() > old_capacity {
                 self.resize_count += 1;
             }
-            if self.resize_count == 10 {
+            // 12 is an arbitrary threshold
+            if self.resize_count == 12 {
                 let bt = std::backtrace::Backtrace::capture();
                 eprintln!(
-                    "Resized IndexMap ten times already, maybe reserve the length in advance?",
+                    "Resized IndexMap {} times already, maybe reserve the length in advance?",
+                    self.resize_count
                 );
                 eprintln!(
                     "  {}",
