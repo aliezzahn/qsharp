@@ -166,3 +166,16 @@ pub const CALL_TO_CICLYC_OPERATION_WITH_CLASSICAL_ARGUMENT: &str = r#"
     operation Foo() : Unit {
         let sum = GaussSum(10);
     }"#;
+
+pub const CALL_TO_CICLYC_OPERATION_WITH_DYNAMIC_ARGUMENT: &str = r#"
+    operation GaussSum(n : Int) : Int {
+        if n == 0 {
+            0
+        } else {
+            n + GaussSum(n - 1)
+        }
+    }
+    operation Foo() : Unit {
+        use q = Qubit();
+        let sum = GaussSum(M(q) == Zero ? 10 | 20);
+    }"#;

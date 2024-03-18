@@ -6,7 +6,8 @@
 use super::common::{
     check, CALL_TO_CICLYC_FUNCTION_WITH_CLASSICAL_ARGUMENT,
     CALL_TO_CICLYC_FUNCTION_WITH_DYNAMIC_ARGUMENT,
-    CALL_TO_CICLYC_OPERATION_WITH_CLASSICAL_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
+    CALL_TO_CICLYC_OPERATION_WITH_CLASSICAL_ARGUMENT,
+    CALL_TO_CICLYC_OPERATION_WITH_DYNAMIC_ARGUMENT, MINIMAL, USE_DYNAMICALLY_SIZED_ARRAY,
     USE_DYNAMIC_BOOLEAN, USE_DYNAMIC_DOUBLE, USE_DYNAMIC_INT, USE_DYNAMIC_PAULI, USE_DYNAMIC_RANGE,
 };
 use expect_test::{expect, Expect};
@@ -166,13 +167,60 @@ fn call_cyclic_function_with_dynamic_argument_yields_errors() {
     );
 }
 
-#[ignore = "work in progress"]
 #[test]
 fn call_cyclic_operation_with_classical_argument_yields_errors() {
     check_profile(
         CALL_TO_CICLYC_OPERATION_WITH_CLASSICAL_ARGUMENT,
         &expect![[r#"
-            []
+            [
+                CyclicOperationSpec(
+                    Span {
+                        lo: 5,
+                        hi: 139,
+                    },
+                ),
+                UseOfDynamicInt(
+                    Span {
+                        lo: 177,
+                        hi: 200,
+                    },
+                ),
+                CallToCyclicOperation(
+                    Span {
+                        lo: 177,
+                        hi: 200,
+                    },
+                ),
+            ]
+        "#]],
+    );
+}
+
+#[test]
+fn call_cyclic_operation_with_dynamic_argument_yields_errors() {
+    check_profile(
+        CALL_TO_CICLYC_OPERATION_WITH_DYNAMIC_ARGUMENT,
+        &expect![[r#"
+            [
+                CyclicOperationSpec(
+                    Span {
+                        lo: 5,
+                        hi: 139,
+                    },
+                ),
+                UseOfDynamicInt(
+                    Span {
+                        lo: 202,
+                        hi: 245,
+                    },
+                ),
+                CallToCyclicOperation(
+                    Span {
+                        lo: 202,
+                        hi: 245,
+                    },
+                ),
+            ]
         "#]],
     );
 }
