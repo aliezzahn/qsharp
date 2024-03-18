@@ -218,8 +218,8 @@ fn call_cyclic_operation_with_classical_argument_yields_errors() {
             [
                 CyclicOperationSpec(
                     Span {
-                        lo: 5,
-                        hi: 139,
+                        lo: 15,
+                        hi: 23,
                     },
                 ),
                 UseOfDynamicInt(
@@ -247,8 +247,8 @@ fn call_cyclic_operation_with_dynamic_argument_yields_errors() {
             [
                 CyclicOperationSpec(
                     Span {
-                        lo: 5,
-                        hi: 139,
+                        lo: 15,
+                        hi: 23,
                     },
                 ),
                 UseOfDynamicBool(
