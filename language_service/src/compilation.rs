@@ -7,7 +7,7 @@ use qsc::{
     compile::{self, Error},
     display::Lookup,
     error::WithSource,
-    fir::PackageStore as FirStore,
+    fir::{ItemKind, LocalItemId, PackageStore as FirStore},
     hir::{self, PackageId},
     incremental::Compiler,
     line_column::{Encoding, Position},
@@ -91,9 +91,24 @@ impl Compilation {
             let compute_properties = analyzer.analyze_all();
             let fir_package_id = map_hir_package_to_fir(package_id);
             let fir_package = fir_store.get(fir_package_id);
+            let item_zero = fir_package
+                .items
+                .get(LocalItemId::from(0))
+                .expect("item zero should exist");
+
+            let ItemKind::Namespace(ident, _) = &item_zero.kind else {
+                panic!("expected namespace");
+            };
+
+            let capabilities = if ident.name.contains("Quantinuum") {
+                RuntimeCapabilityFlags::ForwardBranching
+                    | RuntimeCapabilityFlags::IntegerComputations
+            } else if ident.name.contains("Adaptive") {
+                RuntimeCapabilityFlags::ForwardBranching
+            } else {
+                RuntimeCapabilityFlags::all()
+            };
             let package_compute_properties = compute_properties.get(fir_package_id);
-            let capabilities = RuntimeCapabilityFlags::ForwardBranching
-                | RuntimeCapabilityFlags::IntegerComputations;
             let mut caps_errors =
                 check_supported_capabilities(fir_package, package_compute_properties, capabilities);
             let mut caps_errors = caps_errors
