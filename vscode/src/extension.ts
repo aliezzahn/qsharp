@@ -10,35 +10,57 @@ import {
   qsharpLibraryUriScheme,
 } from "qsharp-lang";
 import * as vscode from "vscode";
+import { initAzureWorkspaces } from "./azure/commands.js";
+import { createCodeLensProvider } from "./codeLens.js";
 import {
   isQsharpDocument,
   isQsharpNotebookCell,
-  qsharpDocumentFilter,
+  qsharpLanguageId,
 } from "./common.js";
-import { createCompletionItemProvider } from "./completion.js";
-import { activateDebugger } from "./debugger/activate.js";
-import { createDefinitionProvider } from "./definition.js";
-import { startCheckingQSharp } from "./diagnostics.js";
-import { createHoverProvider } from "./hover.js";
+import { createCompletionItemProvider } from "./completion";
+import { getTarget } from "./config";
+import { activateDebugger } from "./debugger/activate";
+import { createDefinitionProvider } from "./definition";
+import { startCheckingQSharp } from "./diagnostics";
+import { createHoverProvider } from "./hover";
+import {
+  Logging,
+  initLogForwarder,
+  initOutputWindowLogger,
+} from "./logging.js";
+import { initFileSystem } from "./memfs.js";
 import {
   registerCreateNotebookCommand,
+  registerQSharpNotebookCellUpdateHandlers,
   registerQSharpNotebookHandlers,
 } from "./notebook.js";
+import { getManifest, listDir, readFile } from "./projectSystem.js";
+import { initCodegen } from "./qirGeneration.js";
+import { createReferenceProvider } from "./references.js";
+import { createRenameProvider } from "./rename.js";
+import { createSignatureHelpProvider } from "./signature.js";
+import { activateTargetProfileStatusBarItem } from "./statusbar.js";
 import {
   EventType,
   QsharpDocumentType,
   initTelemetry,
   sendTelemetryEvent,
 } from "./telemetry.js";
-import { initAzureWorkspaces } from "./azure/commands.js";
-import { initCodegen } from "./qirGeneration.js";
-import { activateTargetProfileStatusBarItem } from "./statusbar.js";
-import { createSignatureHelpProvider } from "./signature.js";
-import { createRenameProvider } from "./rename.js";
-import { initFileSystem } from "./memfs.js";
+import { registerWebViewCommands } from "./webviewPanel.js";
 
-export async function activate(context: vscode.ExtensionContext) {
-  initializeLogger();
+export async function activate(
+  context: vscode.ExtensionContext,
+): Promise<ExtensionApi> {
+  const api: ExtensionApi = {};
+
+  if (context.extensionMode === vscode.ExtensionMode.Test) {
+    // Don't log to the output window in tests, forward to a listener instead
+    api.logging = initLogForwarder();
+  } else {
+    // Direct logging to the output window
+    initOutputWindowLogger();
+  }
+
   log.info("Q# extension activating.");
   initTelemetry(context);
 
@@ -63,43 +85,17 @@ export async function activate(context: vscode.ExtensionContext) {
   initCodegen(context);
   activateDebugger(context);
   registerCreateNotebookCommand(context);
+  registerWebViewCommands(context);
   initFileSystem(context);
 
   log.info("Q# extension activated.");
+
+  return api;
 }
 
-function initializeLogger() {
-  const output = vscode.window.createOutputChannel("Q#", { log: true });
-
-  // Override the global logger with functions that write to the output channel
-  log.error = output.error;
-  log.warn = output.warn;
-  log.info = output.info;
-  log.debug = output.debug;
-  log.trace = output.trace;
-
-  // The numerical log levels for VS Code and qsharp don't match.
-  function mapLogLevel(logLevel: vscode.LogLevel) {
-    switch (logLevel) {
-      case vscode.LogLevel.Off:
-        return "off";
-      case vscode.LogLevel.Trace:
-        return "trace";
-      case vscode.LogLevel.Debug:
-        return "debug";
-      case vscode.LogLevel.Info:
-        return "info";
-      case vscode.LogLevel.Warning:
-        return "warn";
-      case vscode.LogLevel.Error:
-        return "error";
-    }
-  }
-
-  log.setLogLevel(mapLogLevel(output.logLevel));
-  output.onDidChangeLogLevel((level) => {
-    log.setLogLevel(mapLogLevel(level));
-  });
+export interface ExtensionApi {
+  // Only available in test mode. Allows listening to extension log events.
+  logging?: Logging;
 }
 
 function registerDocumentUpdateHandlers(languageService: ILanguageService) {
@@ -107,13 +103,28 @@ function registerDocumentUpdateHandlers(languageService: ILanguageService) {
     updateIfQsharpDocument(document);
   });
 
+  // we manually send an OpenDocument telemetry event if this is a Q# document, because the
+  // below subscriptions won't fire for documents that are already open when the extension is activated
+  vscode.workspace.textDocuments.forEach((document) => {
+    if (isQsharpDocument(document)) {
+      const documentType = isQsharpNotebookCell(document)
+        ? QsharpDocumentType.JupyterCell
+        : QsharpDocumentType.Qsharp;
+      sendTelemetryEvent(
+        EventType.OpenedDocument,
+        { documentType },
+        { linesOfCode: document.lineCount },
+      );
+    }
+  });
+
   const subscriptions = [];
   subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((document) => {
-      const documentType = isQsharpDocument(document)
-        ? QsharpDocumentType.Qsharp
-        : isQsharpNotebookCell(document)
+      const documentType = isQsharpNotebookCell(document)
         ? QsharpDocumentType.JupyterCell
+        : isQsharpDocument(document)
+        ? QsharpDocumentType.Qsharp
         : QsharpDocumentType.Other;
       if (documentType !== QsharpDocumentType.Other) {
         sendTelemetryEvent(
@@ -135,7 +146,6 @@ function registerDocumentUpdateHandlers(languageService: ILanguageService) {
   subscriptions.push(
     vscode.workspace.onDidCloseTextDocument((document) => {
       if (isQsharpDocument(document) && !isQsharpNotebookCell(document)) {
-        // Notebook cells don't currently support the language service.
         languageService.closeDocument(document.uri.toString());
       }
     }),
@@ -143,7 +153,7 @@ function registerDocumentUpdateHandlers(languageService: ILanguageService) {
 
   function updateIfQsharpDocument(document: vscode.TextDocument) {
     if (isQsharpDocument(document) && !isQsharpNotebookCell(document)) {
-      // Notebook cells don't currently support the language service.
+      // Regular (not notebook) Q# document.
       languageService.updateDocument(
         document.uri.toString(),
         document.version,
@@ -166,13 +176,18 @@ async function activateLanguageService(extensionUri: vscode.Uri) {
   // synchronize document contents
   subscriptions.push(...registerDocumentUpdateHandlers(languageService));
 
+  // synchronize notebook cell contents
+  subscriptions.push(
+    ...registerQSharpNotebookCellUpdateHandlers(languageService),
+  );
+
   // synchronize configuration
   subscriptions.push(registerConfigurationChangeHandlers(languageService));
 
   // completions
   subscriptions.push(
     vscode.languages.registerCompletionItemProvider(
-      qsharpDocumentFilter,
+      qsharpLanguageId,
       createCompletionItemProvider(languageService),
       "@", // for attribute completion
     ),
@@ -181,7 +196,7 @@ async function activateLanguageService(extensionUri: vscode.Uri) {
   // hover
   subscriptions.push(
     vscode.languages.registerHoverProvider(
-      qsharpDocumentFilter,
+      qsharpLanguageId,
       createHoverProvider(languageService),
     ),
   );
@@ -189,15 +204,23 @@ async function activateLanguageService(extensionUri: vscode.Uri) {
   // go to def
   subscriptions.push(
     vscode.languages.registerDefinitionProvider(
-      qsharpDocumentFilter,
+      qsharpLanguageId,
       createDefinitionProvider(languageService),
+    ),
+  );
+
+  // find references
+  subscriptions.push(
+    vscode.languages.registerReferenceProvider(
+      qsharpLanguageId,
+      createReferenceProvider(languageService),
     ),
   );
 
   // signature help
   subscriptions.push(
     vscode.languages.registerSignatureHelpProvider(
-      qsharpDocumentFilter,
+      qsharpLanguageId,
       createSignatureHelpProvider(languageService),
       "(",
       ",",
@@ -207,22 +230,31 @@ async function activateLanguageService(extensionUri: vscode.Uri) {
   // rename symbol
   subscriptions.push(
     vscode.languages.registerRenameProvider(
-      qsharpDocumentFilter,
+      qsharpLanguageId,
       createRenameProvider(languageService),
     ),
   );
+
+  // code lens
+  subscriptions.push(
+    vscode.languages.registerCodeLensProvider(
+      qsharpLanguageId,
+      createCodeLensProvider(languageService),
+    ),
+  );
+
+  // add the language service dispose handler as well
+  subscriptions.push(languageService);
 
   return subscriptions;
 }
 
 async function updateLanguageServiceProfile(languageService: ILanguageService) {
-  const targetProfile = vscode.workspace
-    .getConfiguration("Q#")
-    .get<string>("targetProfile", "full");
+  const targetProfile = getTarget();
 
   switch (targetProfile) {
     case "base":
-    case "full":
+    case "unrestricted":
       break;
     default:
       log.warn(`Invalid value for target profile: ${targetProfile}`);
@@ -230,7 +262,7 @@ async function updateLanguageServiceProfile(languageService: ILanguageService) {
   log.debug("Target profile set to: " + targetProfile);
 
   languageService.updateConfiguration({
-    targetProfile: targetProfile as "base" | "full",
+    targetProfile: targetProfile,
   });
 }
 
@@ -239,7 +271,11 @@ async function loadLanguageService(baseUri: vscode.Uri) {
   const wasmUri = vscode.Uri.joinPath(baseUri, "./wasm/qsc_wasm_bg.wasm");
   const wasmBytes = await vscode.workspace.fs.readFile(wasmUri);
   await loadWasmModule(wasmBytes);
-  const languageService = await getLanguageService();
+  const languageService = await getLanguageService(
+    readFile,
+    listDir,
+    getManifest,
+  );
   await updateLanguageServiceProfile(languageService);
   const end = performance.now();
   sendTelemetryEvent(

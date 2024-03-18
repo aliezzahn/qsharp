@@ -8,14 +8,13 @@
 ///
 /// This Q# program implements the Deutsch–Jozsa algorithm.
 namespace Sample {
-    open Microsoft.Quantum.Canon;
     open Microsoft.Quantum.Diagnostics;
     open Microsoft.Quantum.Math;
     open Microsoft.Quantum.Measurement;
 
     @EntryPoint()
     operation Main() : (String, Bool)[] {
-        // A Boolean function is a function that maps bits trings to a bit:
+        // A Boolean function is a function that maps bitstrings to a bit:
         //     𝑓 : {0, 1}^n → {0, 1}.
 
         // We say that 𝑓 is constant if 𝑓(𝑥⃗) = 𝑓(𝑦⃗) for all bitstrings 𝑥⃗ and

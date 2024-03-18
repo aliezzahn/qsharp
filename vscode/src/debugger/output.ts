@@ -7,7 +7,7 @@ export function createDebugConsoleEventTarget(out: (message: string) => void) {
   const eventTarget = new QscEventTarget(false);
 
   eventTarget.addEventListener("Message", (evt) => {
-    out(`Message: ${evt.detail}`);
+    out(evt.detail);
   });
 
   eventTarget.addEventListener("DumpMachine", (evt) => {
@@ -20,30 +20,42 @@ export function createDebugConsoleEventTarget(out: (message: string) => void) {
       return `${r}${i}`;
     }
 
-    function probability(real: number, imag: number) {
-      return real * real + imag * imag;
+    function formatProbabilityPercent(real: number, imag: number) {
+      const probabilityPercent = (real * real + imag * imag) * 100;
+      return `${probabilityPercent.toFixed(4)}%`;
+    }
+
+    function formatPhase(real: number, imag: number) {
+      const phase = Math.atan2(imag, real);
+      return phase.toFixed(4);
     }
 
     const dump = evt.detail;
-    out("");
-    out("DumpMachine:");
-    out("");
-    out("  Basis | Amplitude     | Probability   | Phase");
-    out("  ---------------------------------------------");
-    Object.keys(dump).map((basis) => {
-      const [real, imag] = dump[basis];
-      const complex = formatComplex(real, imag);
-      const probabilityPercent = probability(real, imag) * 100;
-      const phase = Math.atan2(imag, real);
+    const basisStates = Object.keys(dump);
+    const basisColumnWidth = Math.max(
+      basisStates[0]?.length ?? 0,
+      "Basis".length,
+    );
+    const basis = "Basis".padEnd(basisColumnWidth);
 
-      out(
-        `  ${basis}  | ${complex} | ${probabilityPercent.toFixed(
-          4,
-        )}%     | ${phase.toFixed(4)}`,
-      );
-    });
-    out("");
-    out("");
+    let out_str = "\n";
+    out_str += "DumpMachine:\n\n";
+    out_str += ` ${basis} | Amplitude      | Probability | Phase\n`;
+    out_str +=
+      " ".padEnd(basisColumnWidth, "-") +
+      "-------------------------------------------\n";
+
+    for (const row of basisStates) {
+      const [real, imag] = dump.state[row];
+      const basis = row.padStart(basisColumnWidth);
+      const amplitude = formatComplex(real, imag).padStart(16);
+      const probability = formatProbabilityPercent(real, imag).padStart(11);
+      const phase = formatPhase(real, imag).padStart(8);
+
+      out_str += ` ${basis} | ${amplitude} | ${probability} | ${phase}\n`;
+    }
+
+    out(out_str);
   });
 
   eventTarget.addEventListener("Result", (evt) => {

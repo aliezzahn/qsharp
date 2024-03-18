@@ -4,18 +4,28 @@
 import {
   ILanguageService,
   VSDiagnostic,
+  log,
   qsharpLibraryUriScheme,
 } from "qsharp-lang";
 import * as vscode from "vscode";
-import { qsharpLanguageId } from "./common.js";
+import { toVscodeLocation, toVscodeRange, qsharpLanguageId } from "./common.js";
 
 export function startCheckingQSharp(
+  languageService: ILanguageService,
+): vscode.Disposable[] {
+  return [
+    ...startLanguageServiceDiagnostics(languageService),
+    ...startQsharpJsonDiagnostics(),
+  ];
+}
+
+function startLanguageServiceDiagnostics(
   languageService: ILanguageService,
 ): vscode.Disposable[] {
   const diagCollection =
     vscode.languages.createDiagnosticCollection(qsharpLanguageId);
 
-  function onDiagnostics(evt: {
+  async function onDiagnostics(evt: {
     detail: {
       uri: string;
       version: number;
@@ -29,17 +39,6 @@ export function startCheckingQSharp(
       // Don't report diagnostics for library files.
       return;
     }
-
-    const getPosition = (offset: number) => {
-      // We need the document here to be able to map offsets to line/column positions.
-      // The document may not be available if this event is to clear diagnostics
-      // for an already-closed document from the problems list.
-      // Note: This mapping will break down if we ever send diagnostics for closed files.
-      const document = vscode.workspace.textDocuments.filter(
-        (doc) => doc.uri.toString() === diagnostics.uri,
-      )[0];
-      return document.positionAt(offset);
-    };
 
     diagCollection.set(
       uri,
@@ -57,7 +56,7 @@ export function startCheckingQSharp(
             break;
         }
         const vscodeDiagnostic = new vscode.Diagnostic(
-          new vscode.Range(getPosition(d.start_pos), getPosition(d.end_pos)),
+          toVscodeRange(d.range),
           d.message,
           severity,
         );
@@ -67,13 +66,7 @@ export function startCheckingQSharp(
         if (d.related) {
           vscodeDiagnostic.relatedInformation = d.related.map((r) => {
             return new vscode.DiagnosticRelatedInformation(
-              new vscode.Location(
-                vscode.Uri.parse(r.source),
-                new vscode.Range(
-                  getPosition(r.start_pos),
-                  getPosition(r.end_pos),
-                ),
-              ),
+              toVscodeLocation(r.location),
               r.message,
             );
           });
@@ -93,4 +86,47 @@ export function startCheckingQSharp(
     },
     diagCollection,
   ];
+}
+
+let qsharpJsonDiagnostics: vscode.DiagnosticCollection | undefined;
+let deleteQsharpJsonListener: vscode.Disposable | undefined;
+const trackedQsharpJsons = new Set<string>();
+
+function startQsharpJsonDiagnostics(): vscode.Disposable[] {
+  qsharpJsonDiagnostics =
+    vscode.languages.createDiagnosticCollection(qsharpLanguageId);
+
+  deleteQsharpJsonListener = vscode.workspace.onDidDeleteFiles((event) => {
+    for (const uri of event.files) {
+      if (trackedQsharpJsons.delete(uri.toString())) {
+        // Clear the diagnostics when the qsharp.json is deleted
+        qsharpJsonDiagnostics?.set(uri, []);
+      }
+    }
+  });
+
+  return [qsharpJsonDiagnostics, deleteQsharpJsonListener];
+}
+
+export function updateQSharpJsonDiagnostics(
+  qsharpJson: vscode.Uri,
+  error?: string,
+) {
+  if (!qsharpJsonDiagnostics) {
+    log.warn("no diagnostic collection for qsharp.json, not reporting");
+  }
+
+  trackedQsharpJsons.add(qsharpJson.toString());
+
+  const errors = error
+    ? [
+        new vscode.Diagnostic(
+          new vscode.Range(0, 0, 0, 0),
+          error,
+          vscode.DiagnosticSeverity.Error,
+        ),
+      ]
+    : [];
+
+  qsharpJsonDiagnostics?.set(qsharpJson, errors);
 }

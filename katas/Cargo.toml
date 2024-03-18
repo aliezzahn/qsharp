@@ -11,5 +11,8 @@ license.workspace = true
 [dependencies]
 qsc = { path = "../compiler/qsc" }
 
-[dev-dependencies]
-indoc = { workspace = true }
+[lints]
+workspace = true
+
+[lib]
+doctest = false

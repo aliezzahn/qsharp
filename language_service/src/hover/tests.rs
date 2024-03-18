@@ -1,37 +1,51 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![allow(clippy::needless_raw_string_hashes)]
+
 use super::get_hover;
-use crate::{
-    protocol,
-    test_utils::{compile_with_fake_stdlib, get_source_and_marker_offsets},
+use crate::test_utils::{
+    compile_notebook_with_fake_stdlib_and_markers, compile_with_fake_stdlib_and_markers,
 };
 use expect_test::{expect, Expect};
 use indoc::indoc;
+use qsc::line_column::Encoding;
 
 /// Asserts that the hover text at the given cursor position matches the expected hover text.
 /// The cursor position is indicated by a `↘` marker in the source text.
 /// The expected hover span is indicated by two `◉` markers in the source text.
 fn check(source_with_markers: &str, expect: &Expect) {
-    let (source, cursor_offsets, target_offsets) =
-        get_source_and_marker_offsets(source_with_markers);
-    let compilation = compile_with_fake_stdlib("<source>", &source);
-    let actual = get_hover(&compilation, "<source>", cursor_offsets[0]).expect("Expected a hover.");
-    assert_eq!(
-        &actual.span,
-        &protocol::Span {
-            start: target_offsets[0],
-            end: target_offsets[1],
-        }
-    );
+    let (compilation, cursor_position, target_spans) =
+        compile_with_fake_stdlib_and_markers(source_with_markers);
+    let actual = get_hover(&compilation, "<source>", cursor_position, Encoding::Utf8)
+        .expect("Expected a hover.");
+    assert_eq!(&actual.span, &target_spans[0]);
     expect.assert_eq(&actual.contents);
 }
 
 /// Asserts that there is no hover for the given test case.
 fn check_none(source_with_markers: &str) {
-    let (source, cursor_offsets, _) = get_source_and_marker_offsets(source_with_markers);
-    let compilation = compile_with_fake_stdlib("<source>", &source);
-    let actual = get_hover(&compilation, "<source>", cursor_offsets[0]);
+    let (compilation, cursor_position, _) =
+        compile_with_fake_stdlib_and_markers(source_with_markers);
+    let actual = get_hover(&compilation, "<source>", cursor_position, Encoding::Utf8);
+    assert!(actual.is_none());
+}
+
+fn check_notebook(cells_with_markers: &[(&str, &str)], expect: &Expect) {
+    let (compilation, cell_uri, position, target_spans) =
+        compile_notebook_with_fake_stdlib_and_markers(cells_with_markers);
+
+    let actual =
+        get_hover(&compilation, &cell_uri, position, Encoding::Utf8).expect("Expected a hover.");
+    assert_eq!(&actual.span, &target_spans[0].range);
+    expect.assert_eq(&actual.contents);
+}
+
+fn check_notebook_none(cells_with_markers: &[(&str, &str)]) {
+    let (compilation, cell_uri, position, _) =
+        compile_notebook_with_fake_stdlib_and_markers(cells_with_markers);
+
+    let actual = get_hover(&compilation, &cell_uri, position, Encoding::Utf8);
     assert!(actual.is_none());
 }
 
@@ -78,6 +92,26 @@ fn callable_with_callable_types() {
 }
 
 #[test]
+fn callable_with_type_params() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            /// Doc comment!
+            operation ◉F↘oo◉<'A, 'B>(a : 'A, b : 'B) : 'B { b }
+        }
+    "#},
+        &expect![[r#"
+            ```qsharp
+            Test
+            operation Foo<'A, 'B>(a : 'A, b : 'B) : 'B
+            ```
+            ---
+            Doc comment!
+        "#]],
+    );
+}
+
+#[test]
 fn callable_ref() {
     check(
         indoc! {r#"
@@ -91,6 +125,27 @@ fn callable_ref() {
             ```qsharp
             Test
             operation Bar() : Unit
+            ```
+        "#]],
+    );
+}
+
+#[test]
+fn callable_with_type_params_ref() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo() : Unit {
+                let temp = ◉B↘ar◉(1, 2.0);
+            }
+
+            operation Bar<'A, 'B>(a : 'A, b : 'B) : 'B { b }
+        }
+    "#},
+        &expect![[r#"
+            ```qsharp
+            Test
+            operation Bar<'A, 'B>(a : 'A, b : 'B) : 'B
             ```
         "#]],
     );
@@ -160,7 +215,7 @@ fn callable_param() {
     check(
         indoc! {r#"
         namespace Test {
-            operation Foo(◉↘x◉: Int) : Unit { let y = x; }
+            operation Foo(◉↘x◉ : Int) : Unit { let y = x; }
         }
     "#},
         &expect![[r#"
@@ -173,17 +228,51 @@ fn callable_param() {
 }
 
 #[test]
+fn callable_param_with_type_param() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo<'A>(◉↘x◉ : 'A) : Unit { let y = x; }
+        }
+    "#},
+        &expect![[r#"
+            parameter of `Foo`
+            ```qsharp
+            x : 'A
+            ```
+        "#]],
+    );
+}
+
+#[test]
 fn callable_param_ref() {
     check(
         indoc! {r#"
         namespace Test {
-            operation Foo(x: Int) : Unit { let y = ◉↘x◉; }
+            operation Foo(x : Int) : Unit { let y = ◉↘x◉; }
         }
     "#},
         &expect![[r#"
             parameter of `Foo`
             ```qsharp
             x : Int
+            ```
+        "#]],
+    );
+}
+
+#[test]
+fn callable_param_with_type_param_ref() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo<'A>(x : 'A) : Unit { let y = ◉↘x◉; }
+        }
+    "#},
+        &expect![[r#"
+            parameter of `Foo`
+            ```qsharp
+            x : 'A
             ```
         "#]],
     );
@@ -249,6 +338,25 @@ fn identifier() {
 }
 
 #[test]
+fn identifier_with_type_param() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo<'A>(a : 'A) : Unit {
+                let ◉↘x◉ = a;
+            }
+        }
+    "#},
+        &expect![[r#"
+            local
+            ```qsharp
+            x : 'A
+            ```
+        "#]],
+    );
+}
+
+#[test]
 fn identifier_ref() {
     check(
         indoc! {r#"
@@ -263,6 +371,26 @@ fn identifier_ref() {
             local
             ```qsharp
             x : Int
+            ```
+        "#]],
+    );
+}
+
+#[test]
+fn identifier_with_type_param_ref() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo<'A>(a : 'A) : Unit {
+                let x = a;
+                let y = ◉↘x◉;
+            }
+        }
+    "#},
+        &expect![[r#"
+            local
+            ```qsharp
+            x : 'A
             ```
         "#]],
     );
@@ -957,6 +1085,26 @@ fn callable_param_doc() {
 }
 
 #[test]
+fn callable_generic_functor_display() {
+    check(
+        indoc! {"
+            namespace Test {
+                operation Foo(op : (Qubit => Unit is Adj)) : Unit {}
+                operation Main() : Unit {
+                    ◉Fo↘o◉;
+                }
+            }
+        "},
+        &expect![[r#"
+            ```qsharp
+            Test
+            operation Foo(op : (Qubit => Unit is Adj)) : Unit
+            ```
+        "#]],
+    );
+}
+
+#[test]
 fn udt_field_incorrect() {
     check_none(indoc! {r#"
         namespace Test {
@@ -1009,6 +1157,26 @@ fn std_callable_with_udt() {
 }
 
 #[test]
+fn std_callable_with_type_param() {
+    check(
+        r#"
+    namespace Test {
+        open FakeStdLib;
+        operation Foo() : Unit {
+            let temp = ◉FakeWi↘thTypeParam◉(3);
+        }
+    }
+    "#,
+        &expect![[r#"
+            ```qsharp
+            FakeStdLib
+            operation FakeWithTypeParam<'A>(a : 'A) : 'A
+            ```
+        "#]],
+    );
+}
+
+#[test]
 fn std_udt_udt_field() {
     check(
         r#"
@@ -1026,4 +1194,61 @@ fn std_udt_udt_field() {
         ```
         "#]],
     );
+}
+
+#[test]
+fn ty_param_def() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo<◉'↘T◉>(x : 'T) : 'T { x }
+        }
+    "#},
+        &expect![[r#"
+            type parameter of `Foo`
+            ```qsharp
+            'T
+            ```
+        "#]],
+    );
+}
+
+#[test]
+fn ty_param_ref() {
+    check(
+        indoc! {r#"
+        namespace Test {
+            operation Foo<'T>(x : ◉'↘T◉) : 'T { x }
+        }
+    "#},
+        &expect![[r#"
+            type parameter of `Foo`
+            ```qsharp
+            'T
+            ```
+        "#]],
+    );
+}
+
+#[test]
+fn notebook_callable_def_across_cells() {
+    check_notebook(
+        &[
+            ("cell1", "operation Callee() : Unit {}"),
+            ("cell2", "◉C↘allee◉();"),
+        ],
+        &expect![[r#"
+            ```qsharp
+            operation Callee() : Unit
+            ```
+        "#]],
+    );
+}
+
+#[test]
+fn notebook_callable_defined_in_later_cell() {
+    check_notebook_none(&[
+        ("cell1", "C↘allee();"),
+        ("cell2", "operation Callee() : Unit {}"),
+    ]);
 }

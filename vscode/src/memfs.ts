@@ -28,8 +28,8 @@ will be lost when the editor window is closed. You should use the 'File: Save
 As...' command in the VS Code Command Palette (accessed by pressing F1) to save
 your work elsewhere if you wish to keep it.
 
-For more details on using the Azure Quantum Development Kit for Visual Studio
-Code, see the wiki at <https://github.com/microsoft/qsharp/wiki/>
+For more information about the Azure Quantum Development Kit,
+visit <https://aka.ms/AQ/Documentation>.
 `;
 
 // Put the playground in its own 'authority', so we can keep the default space clean.
@@ -113,6 +113,7 @@ export async function initFileSystem(context: vscode.ExtensionContext) {
               overwrite: true,
             });
             await vscode.commands.executeCommand("vscode.open", codeFile);
+            await vscode.commands.executeCommand("qsharp-vscode.showHelp");
           } catch (err) {
             log.warn("Unable to decode the code in the URL. ", err);
           }

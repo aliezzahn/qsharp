@@ -5,26 +5,28 @@
 // the "./browser.js" file is the entry point module.
 
 import { createRequire } from "node:module";
-import { Worker } from "node:worker_threads";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { log } from "./log.js";
-import { Compiler, ICompiler, ICompilerWorker } from "./compiler/compiler.js";
-import { createCompilerProxy } from "./compiler/worker-proxy.js";
+import { ProjectLoader } from "../lib/node/qsc_wasm.cjs";
 import {
-  ILanguageService,
-  ILanguageServiceWorker,
-  QSharpLanguageService,
-  qsharpLibraryUriScheme,
-} from "./language-service/language-service.js";
-import { createLanguageServiceProxy } from "./language-service/worker-proxy.js";
+  Compiler,
+  ICompiler,
+  ICompilerWorker,
+  compilerProtocol,
+} from "./compiler/compiler.js";
 import {
   IDebugService,
   IDebugServiceWorker,
   QSharpDebugService,
+  debugServiceProtocol,
 } from "./debug-service/debug-service.js";
-import { createDebugServiceProxy } from "./debug-service/worker-proxy.js";
+import {
+  ILanguageService,
+  ILanguageServiceWorker,
+  QSharpLanguageService,
+  languageServiceProtocol,
+  qsharpLibraryUriScheme,
+} from "./language-service/language-service.js";
+import { log } from "./log.js";
+import { createProxy } from "./workers/node.js";
 
 export { qsharpLibraryUriScheme };
 
@@ -53,23 +55,24 @@ export function getCompiler(): ICompiler {
   return new Compiler(wasm);
 }
 
+export function getProjectLoader(
+  readFile: (path: string) => Promise<string | null>,
+  loadDirectory: (path: string) => Promise<[string, number][]>,
+  getManifest: (path: string) => Promise<{
+    manifestDirectory: string;
+  } | null>,
+): ProjectLoader {
+  if (!wasm) {
+    wasm = require("../lib/node/qsc_wasm.cjs") as Wasm;
+    // Set up logging and telemetry as soon as possible after instantiating
+    wasm.initLogging(log.logWithLevel, log.getLogLevel());
+    log.onLevelChanged = (level) => wasm?.setLogLevel(level);
+  }
+  return new wasm.ProjectLoader(readFile, loadDirectory, getManifest);
+}
+
 export function getCompilerWorker(): ICompilerWorker {
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const worker = new Worker(join(thisDir, "./compiler/worker-node.js"), {
-    workerData: { qscLogLevel: log.getLogLevel() },
-  });
-
-  // Create the proxy which will forward method calls to the worker
-  const proxy = createCompilerProxy(
-    // If you lose the 'this' binding, some environments have issues.
-    worker.postMessage.bind(worker),
-    () => worker.terminate(),
-  );
-
-  // Let proxy handle response and event messages from the worker
-  worker.addListener("message", proxy.onMsgFromWorker);
-
-  return proxy;
+  return createProxy("../compiler/worker-node.js", compilerProtocol);
 }
 
 export function getDebugService(): IDebugService {
@@ -78,47 +81,25 @@ export function getDebugService(): IDebugService {
 }
 
 export function getDebugServiceWorker(): IDebugServiceWorker {
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const worker = new Worker(join(thisDir, "./debug-service/worker-node.js"), {
-    workerData: { qscLogLevel: log.getLogLevel() },
-  });
-
-  // Create the proxy which will forward method calls to the worker
-  const proxy = createDebugServiceProxy(
-    // If you lose the 'this' binding, some environments have issues.
-    worker.postMessage.bind(worker),
-    () => worker.terminate(),
-  );
-
-  // Let proxy handle response and event messages from the worker
-  worker.addListener("message", proxy.onMsgFromWorker);
-
-  return proxy;
+  return createProxy("../debug-service/worker-node.js", debugServiceProtocol);
 }
 
-export function getLanguageService(): ILanguageService {
+export function getLanguageService(
+  readFile?: (uri: string) => Promise<string | null>,
+  listDir?: (uri: string) => Promise<[string, number][]>,
+  getManifest?: (uri: string) => Promise<{
+    manifestDirectory: string;
+  } | null>,
+): ILanguageService {
   if (!wasm) wasm = require("../lib/node/qsc_wasm.cjs") as Wasm;
-  return new QSharpLanguageService(wasm);
+  return new QSharpLanguageService(wasm, readFile, listDir, getManifest);
 }
 
 export function getLanguageServiceWorker(): ILanguageServiceWorker {
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const worker = new Worker(
-    join(thisDir, "./language-service/worker-node.js"),
-    {
-      workerData: { qscLogLevel: log.getLogLevel() },
-    },
+  return createProxy(
+    "../language-service/worker-node.js",
+    languageServiceProtocol,
   );
-
-  // Create the proxy which will forward method calls to the worker
-  const proxy = createLanguageServiceProxy(
-    // If you lose the 'this' binding, some environments have issues.
-    worker.postMessage.bind(worker),
-    () => worker.terminate(),
-  );
-
-  // Let proxy handle response and event messages from the worker
-  worker.addListener("message", proxy.onMsgFromWorker);
-
-  return proxy;
 }
+
+export * as utils from "./utils.js";

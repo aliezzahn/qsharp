@@ -1,6 +1,6 @@
 {
   "name": "qsharp-lang-vscode-dev",
-  "displayName": "[DEV BUILD] Azure Quantum Development Kit (QDK) Preview",
+  "displayName": "[DEV BUILD] Azure Quantum Development Kit (QDK)",
   "description": "Q# Language Support",
   "version": "0.0.0",
   "publisher": "quantum",
@@ -24,7 +24,8 @@
     "onDebug",
     "onDebugResolve:qsharp",
     "onDebugDynamicConfigurations:qsharp",
-    "onFileSystem:qsharp-vfs"
+    "onFileSystem:qsharp-vfs",
+    "onWebviewPanel:qsharp-webview"
   ],
   "contributes": {
     "walkthroughs": [
@@ -97,13 +98,13 @@
       "properties": {
         "Q#.targetProfile": {
           "type": "string",
-          "default": "full",
+          "default": "unrestricted",
           "enum": [
-            "full",
+            "unrestricted",
             "base"
           ],
           "enumDescriptions": [
-            "The full set of capabilities required to run any Q# program. This option maps to the Full Profile as defined by the QIR specification.",
+            "The set of all capabilities required to run any Q# program.",
             "The minimal set of capabilities required to run a quantum program. This option maps to the Base Profile as defined by the QIR specification."
           ],
           "description": "Setting the target profile allows the Q# extension to generate programs that are compatible with a specific target. The target is the hardware or simulator which will be used to run the Q# program. The target profile is a description of a target's capabilities."
@@ -154,6 +155,18 @@
         },
         {
           "command": "qsharp-vscode.getQir",
+          "when": "resourceLangId == qsharp"
+        },
+        {
+          "command": "qsharp-vscode.showHistogram",
+          "when": "resourceLangId == qsharp"
+        },
+        {
+          "command": "qsharp-vscode.showRe",
+          "when": "resourceLangId == qsharp"
+        },
+        {
+          "command": "qsharp-vscode.showHelp",
           "when": "resourceLangId == qsharp"
         },
         {
@@ -214,7 +227,7 @@
     "viewsWelcome": [
       {
         "view": "quantum-workspaces",
-        "contents": "Connect to Azure Quantum\n[Add an existing workspace](command:qsharp-vscode.workspacesAdd)\nNote: For the first workspace added there may be several consent prompts to grant VS Code access.\nTo learn more visit the [Azure Quantum Development Kit wiki](https://github.com/microsoft/qsharp/wiki)"
+        "contents": "Connect to Azure Quantum\n[Add an existing workspace](command:qsharp-vscode.workspacesAdd)\nNote: For the first workspace added there may be several consent prompts to grant VS Code access.\nFor more information about the QDK and Azure Quantum, visit [https://aka.ms/AQ/Documentation](https://aka.ms/AQ/Documentation)."
       }
     ],
     "commands": [
@@ -236,6 +249,21 @@
         "category": "Debug",
         "enablement": "!inDebugMode",
         "icon": "$(play)"
+      },
+      {
+        "command": "qsharp-vscode.showHistogram",
+        "title": "Run file and show histogram",
+        "category": "Q#"
+      },
+      {
+        "command": "qsharp-vscode.showRe",
+        "title": "Calculate Resource Estimates",
+        "category": "Q#"
+      },
+      {
+        "command": "qsharp-vscode.showHelp",
+        "title": "Help",
+        "category": "Q#"
       },
       {
         "command": "qsharp-vscode.workspacesRefresh",
@@ -324,6 +352,12 @@
         "path": "./syntaxes/qsharp.tmLanguage.json"
       }
     ],
+    "jsonValidation": [
+      {
+        "fileMatch": "qsharp.json",
+        "url": "./qsharp.schema.json"
+      }
+    ],
     "debuggers": [
       {
         "type": "qsharp",
@@ -363,14 +397,19 @@
           }
         }
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[qsharp]": {
+        "debug.saveBeforeStart": "none"
+      }
+    }
   },
   "scripts": {
     "build": "npm run tsc:check && node build.mjs",
     "build:watch": "node build.mjs --watch",
     "start": "npm exec --no -- @vscode/test-web --extensionDevelopmentPath . ../samples",
     "test": "node ./test/runTests.mjs",
-    "pretest": "npm exec --no playwright install && node ./test/buildTests.mjs",
+    "pretest": "npm exec --no playwright install chromium && node ./test/buildTests.mjs",
     "tsc:check": "node ../node_modules/typescript/bin/tsc -p ./tsconfig.json"
   },
   "repository": {

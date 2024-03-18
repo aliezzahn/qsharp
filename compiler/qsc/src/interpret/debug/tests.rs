@@ -1,14 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![allow(clippy::needless_raw_string_hashes)]
+
 use indoc::indoc;
 use miette::Result;
+use qsc_data_structures::language_features::LanguageFeatures;
 use qsc_eval::{output::CursorReceiver, val::Value};
-use qsc_frontend::compile::{SourceMap, TargetProfile};
+use qsc_frontend::compile::{RuntimeCapabilityFlags, SourceMap};
 use qsc_passes::PackageType;
 use std::io::Cursor;
 
-use crate::interpret::stateful::{self, InterpretResult, Interpreter};
+use crate::interpret::{Error, InterpretResult, Interpreter};
 
 fn line(interpreter: &mut Interpreter, line: impl AsRef<str>) -> (InterpretResult, String) {
     let mut cursor = Cursor::new(Vec::<u8>::new());
@@ -19,7 +22,7 @@ fn line(interpreter: &mut Interpreter, line: impl AsRef<str>) -> (InterpretResul
     )
 }
 
-fn eval(interpreter: &mut stateful::Interpreter) -> (Result<Value, Vec<stateful::Error>>, String) {
+fn eval(interpreter: &mut Interpreter) -> (Result<Value, Vec<Error>>, String) {
     let mut cursor = Cursor::new(Vec::<u8>::new());
     let mut receiver = CursorReceiver::new(&mut cursor);
     (interpreter.eval_entry(&mut receiver), receiver.dump())
@@ -63,8 +66,14 @@ fn stack_traces_can_cross_eval_session_and_file_boundaries() {
         ],
         None,
     );
-    let mut interpreter = Interpreter::new(true, source_map, PackageType::Lib, TargetProfile::Full)
-        .expect("Failed to compile base environment.");
+    let mut interpreter = Interpreter::new(
+        true,
+        source_map,
+        PackageType::Lib,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    )
+    .expect("Failed to compile base environment.");
 
     let (result, _) = line(
         &mut interpreter,
@@ -132,8 +141,14 @@ fn stack_traces_can_cross_file_and_entry_boundaries() {
         ],
         Some("Adjoint Test2.A(0)".into()),
     );
-    let mut interpreter = Interpreter::new(true, source_map, PackageType::Exe, TargetProfile::Full)
-        .expect("Failed to compile base environment.");
+    let mut interpreter = Interpreter::new(
+        true,
+        source_map,
+        PackageType::Exe,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    )
+    .expect("Failed to compile base environment.");
 
     let (result, _) = eval(&mut interpreter);
 

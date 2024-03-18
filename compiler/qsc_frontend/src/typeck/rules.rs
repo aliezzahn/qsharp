@@ -81,8 +81,12 @@ impl<'a> Context<'a> {
         self.return_ty = Some(spec.output.clone());
         let block = self.infer_block(spec.block);
         if let Some(return_ty) = self.return_ty.take() {
-            let span = spec.block.stmts.last().map_or(spec.block.span, |s| s.span);
-            self.inferrer.eq(span, return_ty, block.ty);
+            if block.ty == Ty::UNIT {
+                self.inferrer.eq(spec.output_span, block.ty, return_ty);
+            } else {
+                let span = spec.block.stmts.last().map_or(spec.block.span, |s| s.span);
+                self.inferrer.eq(span, return_ty, block.ty);
+            }
         }
     }
 
@@ -102,7 +106,7 @@ impl<'a> Context<'a> {
             TyKind::Hole => self.inferrer.fresh_ty(TySource::not_divergent(ty.span)),
             TyKind::Paren(inner) => self.infer_ty(inner),
             TyKind::Path(path) => match self.names.get(path.id) {
-                Some(&Res::Item(item)) => Ty::Udt(hir::Res::Item(item)),
+                Some(&Res::Item(item, _)) => Ty::Udt(path.name.name.clone(), hir::Res::Item(item)),
                 Some(&Res::PrimTy(prim)) => Ty::Prim(prim),
                 Some(Res::UnitTy) => Ty::Tuple(Vec::new()),
                 None => Ty::Err,
@@ -116,7 +120,7 @@ impl<'a> Context<'a> {
                 ),
             },
             TyKind::Param(name) => match self.names.get(name.id) {
-                Some(Res::Param(id)) => Ty::Param(*id),
+                Some(Res::Param(id)) => Ty::Param(name.name.clone(), *id),
                 None => Ty::Err,
                 Some(_) => unreachable!(
                     "A parameter should never resolve to a non-parameter type, as there \
@@ -126,6 +130,7 @@ impl<'a> Context<'a> {
             TyKind::Tuple(items) => {
                 Ty::Tuple(items.iter().map(|item| self.infer_ty(item)).collect())
             }
+            TyKind::Err => Ty::Err,
         }
     }
 
@@ -284,23 +289,41 @@ impl<'a> Context<'a> {
                 let cond_span = cond.span;
                 let cond = self.infer_expr(cond);
                 self.inferrer.eq(cond_span, Ty::Prim(Prim::Bool), cond.ty);
+                let if_true_span = if_true.span;
                 let if_true = self.infer_block(if_true);
-                let if_false = if_false
-                    .as_ref()
-                    .map_or(converge(Ty::UNIT), |e| self.infer_expr(e));
-                self.inferrer.eq(expr.span, if_true.ty.clone(), if_false.ty);
+                let if_false_diverges = match if_false {
+                    None => {
+                        self.inferrer.eq(if_true_span, Ty::UNIT, if_true.ty.clone());
+                        false
+                    }
+                    Some(if_false) => {
+                        let if_false = self.infer_expr(if_false);
+                        self.inferrer
+                            .eq(if_true_span, if_true.ty.clone(), if_false.ty);
+                        if_false.diverges
+                    }
+                };
                 self.diverge_if(
                     cond.diverges,
                     Partial {
-                        diverges: if_true.diverges && if_false.diverges,
+                        diverges: if_true.diverges && if_false_diverges,
                         ..if_true
                     },
                 )
             }
             ExprKind::Index(container, index) => {
+                let container_span = container.span;
                 let container = self.infer_expr(container);
                 let index = self.infer_expr(index);
                 let item_ty = self.inferrer.fresh_ty(TySource::not_divergent(expr.span));
+                let container_item_ty = self
+                    .inferrer
+                    .fresh_ty(TySource::not_divergent(container_span));
+                self.inferrer.eq(
+                    container_span,
+                    container.ty.clone(),
+                    Ty::Array(Box::new(container_item_ty)),
+                );
                 self.inferrer.class(
                     expr.span,
                     Class::HasIndex {
@@ -363,7 +386,7 @@ impl<'a> Context<'a> {
             ExprKind::Paren(expr) => self.infer_expr(expr),
             ExprKind::Path(path) => match self.names.get(path.id) {
                 None => converge(Ty::Err),
-                Some(Res::Item(item)) => {
+                Some(Res::Item(item, _)) => {
                     let scheme = self.globals.get(item).expect("item should have scheme");
                     let (ty, args) = self.inferrer.instantiate(scheme, expr.span);
                     self.table.generics.insert(expr.id, args);
@@ -426,8 +449,10 @@ impl<'a> Context<'a> {
                 let cond = self.infer_expr(cond);
                 self.inferrer.eq(cond_span, Ty::Prim(Prim::Bool), cond.ty);
                 let if_true = self.infer_expr(if_true);
+                let if_false_span = if_false.span;
                 let if_false = self.infer_expr(if_false);
-                self.inferrer.eq(expr.span, if_true.ty.clone(), if_false.ty);
+                self.inferrer
+                    .eq(if_false_span, if_true.ty.clone(), if_false.ty);
                 self.diverge_if(
                     cond.diverges,
                     Partial {
@@ -561,34 +586,34 @@ impl<'a> Context<'a> {
 
         let ty = match op {
             BinOp::AndL | BinOp::OrL => {
-                self.inferrer.eq(span, lhs.ty.clone(), rhs.ty);
+                self.inferrer.eq(rhs_span, lhs.ty.clone(), rhs.ty);
                 self.inferrer
                     .eq(lhs_span, Ty::Prim(Prim::Bool), lhs.ty.clone());
                 lhs
             }
             BinOp::Eq | BinOp::Neq => {
-                self.inferrer.eq(span, lhs.ty.clone(), rhs.ty);
+                self.inferrer.eq(rhs_span, lhs.ty.clone(), rhs.ty);
                 self.inferrer.class(lhs_span, Class::Eq(lhs.ty));
                 converge(Ty::Prim(Prim::Bool))
             }
             BinOp::Add => {
-                self.inferrer.eq(span, lhs.ty.clone(), rhs.ty);
+                self.inferrer.eq(rhs_span, lhs.ty.clone(), rhs.ty);
                 self.inferrer.class(lhs_span, Class::Add(lhs.ty.clone()));
                 lhs
             }
             BinOp::Gt | BinOp::Gte | BinOp::Lt | BinOp::Lte => {
-                self.inferrer.eq(span, lhs.ty.clone(), rhs.ty);
+                self.inferrer.eq(rhs_span, lhs.ty.clone(), rhs.ty);
                 self.inferrer.class(lhs_span, Class::Num(lhs.ty));
                 converge(Ty::Prim(Prim::Bool))
             }
             BinOp::AndB | BinOp::OrB | BinOp::XorB => {
-                self.inferrer.eq(span, lhs.ty.clone(), rhs.ty);
+                self.inferrer.eq(rhs_span, lhs.ty.clone(), rhs.ty);
                 self.inferrer
                     .class(lhs_span, Class::Integral(lhs.ty.clone()));
                 lhs
             }
             BinOp::Div | BinOp::Mod | BinOp::Mul | BinOp::Sub => {
-                self.inferrer.eq(span, lhs.ty.clone(), rhs.ty);
+                self.inferrer.eq(rhs_span, lhs.ty.clone(), rhs.ty);
                 self.inferrer.class(lhs_span, Class::Num(lhs.ty.clone()));
                 lhs
             }
@@ -666,6 +691,7 @@ impl<'a> Context<'a> {
             PatKind::Tuple(items) => {
                 Ty::Tuple(items.iter().map(|item| self.infer_pat(item)).collect())
             }
+            PatKind::Err => Ty::Err,
         };
 
         self.record(pat.id, ty.clone());
@@ -696,6 +722,7 @@ impl<'a> Context<'a> {
                 }
                 self.diverge_if(diverges, converge(Ty::Tuple(tys)))
             }
+            QubitInitKind::Err => converge(Ty::Err),
         };
 
         self.record(init.id, ty.ty.clone());
@@ -752,7 +779,7 @@ impl<'a> Context<'a> {
 
         for (id, span) in self.typed_holes {
             let ty = self.table.terms.get_mut(id).expect("node should have type");
-            errs.push(Error(super::ErrorKind::TyHole(ty.clone(), span)));
+            errs.push(Error(super::ErrorKind::TyHole(ty.display(), span)));
         }
 
         errs
@@ -765,6 +792,7 @@ pub(super) struct SpecImpl<'a> {
     pub(super) callable_input: &'a Pat,
     pub(super) spec_input: Option<&'a Pat>,
     pub(super) output: &'a Ty,
+    pub(super) output_span: Span,
     pub(super) block: &'a Block,
 }
 

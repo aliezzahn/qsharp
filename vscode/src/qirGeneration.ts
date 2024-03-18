@@ -6,6 +6,8 @@ import { getCompilerWorker, log } from "qsharp-lang";
 import { isQsharpDocument } from "./common";
 import { EventType, sendTelemetryEvent } from "./telemetry";
 import { getRandomGuid } from "./utils";
+import { getTarget, setTarget } from "./config";
+import { loadProject } from "./projectSystem";
 
 const generateQirTimeoutMs = 30000;
 
@@ -21,15 +23,15 @@ export class QirGenerationError extends Error {
 export async function getQirForActiveWindow(): Promise<string> {
   let result = "";
   const editor = vscode.window.activeTextEditor;
+
   if (!editor || !isQsharpDocument(editor.document)) {
     throw new QirGenerationError(
       "The currently active window is not a Q# file",
     );
   }
 
-  const configuration = vscode.workspace.getConfiguration("Q#");
   // Check that the current target is base profile, and current doc has no errors.
-  const targetProfile = configuration.get<string>("targetProfile", "full");
+  const targetProfile = getTarget();
   if (targetProfile !== "base") {
     const result = await vscode.window.showWarningMessage(
       "Submitting to Azure is only supported when targeting the QIR base profile.",
@@ -43,26 +45,28 @@ export async function getQirForActiveWindow(): Promise<string> {
           "Please update the QIR target via the status bar selector or extension settings.",
       );
     } else {
-      await configuration.update(
-        "targetProfile",
-        "base",
-        vscode.ConfigurationTarget.Global,
+      setTarget("base");
+    }
+  }
+  let sources: [string, string][] = [];
+  let languageFeatures: string[] = [];
+  try {
+    const result = await loadProject(editor.document.uri);
+    sources = result.sources;
+    languageFeatures = result.languageFeatures || [];
+  } catch (e: any) {
+    throw new QirGenerationError(e.message);
+  }
+  for (const source of sources) {
+    const diagnostics = await vscode.languages.getDiagnostics(
+      vscode.Uri.parse(source[0]),
+    );
+    if (diagnostics?.length > 0) {
+      throw new QirGenerationError(
+        "The current program contains errors that must be fixed before submitting to Azure",
       );
     }
   }
-
-  // Get the diagnostics for the current document.
-  const diagnostics = await vscode.languages.getDiagnostics(
-    editor.document.uri,
-  );
-  if (diagnostics?.length > 0) {
-    throw new QirGenerationError(
-      "The current program contains errors that must be fixed before submitting to Azure",
-    );
-  }
-
-  const code = editor.document.getText();
-
   // Create a temporary worker just to get the QIR, as it may loop/panic during codegen.
   // Let it run for max 10 seconds, then terminate it if not complete.
   const worker = getCompilerWorker(compilerWorkerScriptPath);
@@ -70,13 +74,14 @@ export async function getQirForActiveWindow(): Promise<string> {
     worker.terminate();
   }, generateQirTimeoutMs);
   try {
-    const correlationId = getRandomGuid();
-    sendTelemetryEvent(EventType.GenerateQirStart, { correlationId }, {});
-    result = await worker.getQir(code);
+    const associationId = getRandomGuid();
+    const start = performance.now();
+    sendTelemetryEvent(EventType.GenerateQirStart, { associationId }, {});
+    result = await worker.getQir(sources, languageFeatures);
     sendTelemetryEvent(
       EventType.GenerateQirEnd,
-      { correlationId },
-      { qirLength: result.length },
+      { associationId },
+      { qirLength: result.length, timeToCompleteMs: performance.now() - start },
     );
     clearTimeout(compilerTimeout);
   } catch (e: any) {

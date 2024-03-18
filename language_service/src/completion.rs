@@ -4,13 +4,16 @@
 #[cfg(test)]
 mod tests;
 
-use std::rc::Rc;
-
-use crate::display::CodeDisplay;
-use crate::protocol::{self, CompletionItem, CompletionItemKind, CompletionList};
-use crate::qsc_utils::{map_offset, span_contains, Compilation};
+use crate::compilation::{Compilation, CompilationKind};
+use crate::protocol::{CompletionItem, CompletionItemKind, CompletionList};
+use crate::qsc_utils::{into_range, span_contains};
 use qsc::ast::visit::{self, Visitor};
-use qsc::hir::{ItemKind, Package, PackageId};
+use qsc::display::{CodeDisplay, Lookup};
+use qsc::hir::{ItemKind, Package, PackageId, Visibility};
+use qsc::line_column::{Encoding, Position, Range};
+use qsc::resolve::{Local, LocalKind};
+use rustc_hash::FxHashSet;
+use std::rc::Rc;
 
 const PRELUDE: [&str; 3] = [
     "Microsoft.Quantum.Canon",
@@ -21,15 +24,17 @@ const PRELUDE: [&str; 3] = [
 pub(crate) fn get_completions(
     compilation: &Compilation,
     source_name: &str,
-    offset: u32,
+    position: Position,
+    position_encoding: Encoding,
 ) -> CompletionList {
-    // Map the file offset into a SourceMap offset
-    let offset = map_offset(&compilation.user_unit.sources, source_name, offset);
+    let offset =
+        compilation.source_position_to_package_offset(source_name, position, position_encoding);
+    let user_ast_package = &compilation.user_unit().ast.package;
 
     // Determine context for the offset
     let mut context_finder = ContextFinder {
         offset,
-        context: if compilation.user_unit.ast.package.nodes.is_empty() {
+        context: if user_ast_package.nodes.is_empty() {
             // The parser failed entirely, no context to go on
             Context::NoCompilation
         } else {
@@ -40,22 +45,36 @@ pub(crate) fn get_completions(
         start_of_namespace: None,
         current_namespace_name: None,
     };
-    context_finder.visit_package(&compilation.user_unit.ast.package);
+    context_finder.visit_package(user_ast_package);
+
+    let insert_open_at = match compilation.kind {
+        CompilationKind::OpenProject => context_finder.start_of_namespace,
+        // Since notebooks don't typically contain namespace declarations,
+        // open statements should just get before the first non-whitespace
+        // character (i.e. at the top of the cell)
+        CompilationKind::Notebook => Some(get_first_non_whitespace_in_source(compilation, offset)),
+    };
+
+    let insert_open_range = insert_open_at.map(|o| {
+        into_range(
+            position_encoding,
+            qsc::Span { lo: o, hi: o },
+            &compilation.user_unit().sources,
+        )
+    });
+
+    let indent = match insert_open_at {
+        Some(start) => get_indent(compilation, start),
+        None => String::new(),
+    };
 
     // The PRELUDE namespaces are always implicitly opened.
     context_finder
         .opens
         .extend(PRELUDE.into_iter().map(|ns| (Rc::from(ns), None)));
 
-    // We don't attempt to be comprehensive or accurate when determining completions,
-    // since that's not really possible without more sophisticated error recovery
-    // in the parser or the ability for the resolver to gather all
-    // appropriate names for a scope. These are not done at the moment.
-
-    // So the following is an attempt to get "good enough" completions, tuned
-    // based on the user experience of typing out a few samples in the editor.
-
     let mut builder = CompletionListBuilder::new();
+
     match context_finder.context {
         Context::Namespace => {
             // Include "open", "operation", etc
@@ -71,54 +90,123 @@ pub(crate) fn get_completions(
             builder.push_globals(
                 compilation,
                 &context_finder.opens,
-                context_finder.start_of_namespace,
+                insert_open_range,
                 &context_finder.current_namespace_name,
+                &indent,
             );
         }
 
         Context::CallableSignature => {
             builder.push_types();
+            builder.push_locals(compilation, offset, false, true);
         }
         Context::Block => {
             // Pretty much anything goes in a block
+            builder.push_locals(compilation, offset, true, true);
             builder.push_stmt_keywords();
             builder.push_expr_keywords();
             builder.push_types();
             builder.push_globals(
                 compilation,
                 &context_finder.opens,
-                context_finder.start_of_namespace,
+                insert_open_range,
                 &context_finder.current_namespace_name,
+                &indent,
             );
 
             // Item decl keywords last, unlike in a namespace
             builder.push_item_decl_keywords();
         }
-        Context::NoCompilation | Context::TopLevel => {
-            builder.push_namespace_keyword();
-        }
-    }
+        Context::NoCompilation | Context::TopLevel => match compilation.kind {
+            CompilationKind::OpenProject => builder.push_namespace_keyword(),
+            CompilationKind::Notebook => {
+                // For notebooks, the top-level allows for
+                // more syntax.
+
+                builder.push_locals(compilation, offset, true, true);
+
+                // Item declarations
+                builder.push_item_decl_keywords();
+
+                // Things that go in a block
+                builder.push_stmt_keywords();
+                builder.push_expr_keywords();
+                builder.push_types();
+                builder.push_globals(
+                    compilation,
+                    &context_finder.opens,
+                    insert_open_range,
+                    &context_finder.current_namespace_name,
+                    &indent,
+                );
+
+                // Namespace declarations - least likely to be used, so last
+                builder.push_namespace_keyword();
+            }
+        },
+    };
 
     CompletionList {
         items: builder.into_items(),
     }
 }
 
+fn get_first_non_whitespace_in_source(compilation: &Compilation, package_offset: u32) -> u32 {
+    let source = compilation
+        .user_unit()
+        .sources
+        .find_by_offset(package_offset)
+        .expect("source should exist in the user source map");
+
+    let first = source
+        .contents
+        .find(|c: char| !c.is_whitespace())
+        .unwrap_or(source.contents.len());
+
+    let first = u32::try_from(first).expect("source length should fit into u32");
+
+    source.offset + first
+}
+
+fn get_indent(compilation: &Compilation, package_offset: u32) -> String {
+    let source = compilation
+        .user_unit()
+        .sources
+        .find_by_offset(package_offset)
+        .expect("source should exist in the user source map");
+    let source_offset = (package_offset - source.offset)
+        .try_into()
+        .expect("offset can't be converted to uszie");
+    let before_offset = &source.contents[..source_offset];
+    let mut indent = match before_offset.rfind(|c| c == '{' || c == '\n') {
+        Some(begin) => {
+            let indent = &before_offset[begin..];
+            indent.strip_prefix('{').unwrap_or(indent)
+        }
+        None => before_offset,
+    }
+    .to_string();
+    if !indent.starts_with('\n') {
+        indent.insert(0, '\n');
+    }
+    indent
+}
+
 struct CompletionListBuilder {
     current_sort_group: u32,
-    items: Vec<CompletionItem>,
+    items: FxHashSet<CompletionItem>,
 }
 
 impl CompletionListBuilder {
     fn new() -> Self {
         CompletionListBuilder {
             current_sort_group: 1,
-            items: Vec::new(),
+            items: FxHashSet::default(),
         }
     }
 
     fn into_items(self) -> Vec<CompletionItem> {
-        self.items
+        self.items.into_iter().collect()
     }
 
     fn push_item_decl_keywords(&mut self) {
@@ -175,43 +263,64 @@ impl CompletionListBuilder {
         &mut self,
         compilation: &Compilation,
         opens: &[(Rc<str>, Option<Rc<str>>)],
-        start_of_namespace: Option<u32>,
+        insert_open_range: Option<Range>,
         current_namespace_name: &Option<Rc<str>>,
+        indent: &String,
     ) {
-        let current = &compilation.user_unit.package;
-        let std = &compilation
-            .package_store
-            .get(compilation.std_package_id)
-            .expect("expected to find std package")
-            .package;
         let core = &compilation
             .package_store
             .get(PackageId::CORE)
             .expect("expected to find core package")
             .package;
 
-        let display = CodeDisplay { compilation };
+        let mut all_except_core = compilation
+            .package_store
+            .iter()
+            .filter(|p| p.0 != PackageId::CORE)
+            .collect::<Vec<_>>();
 
-        self.push_sorted_completions(Self::get_callables(
-            None,
-            current,
-            &display,
-            opens,
-            start_of_namespace,
-            current_namespace_name.clone(),
-        ));
-        self.push_sorted_completions(Self::get_callables(
-            Some(compilation.std_package_id),
-            std,
-            &display,
-            opens,
-            start_of_namespace,
-            current_namespace_name.clone(),
-        ));
-        self.push_sorted_completions(Self::get_core_callables(core, &display));
-        self.push_completions(Self::get_namespaces(current));
-        self.push_completions(Self::get_namespaces(std));
+        // Reverse to collect symbols starting at the current package backwards
+        all_except_core.reverse();
+
+        for (package_id, _) in &all_except_core {
+            self.push_sorted_completions(Self::get_callables(
+                compilation,
+                *package_id,
+                opens,
+                insert_open_range,
+                current_namespace_name.clone(),
+                indent,
+            ));
+        }
+
+        self.push_sorted_completions(Self::get_core_callables(compilation, core));
+
+        for (_, unit) in &all_except_core {
+            self.push_completions(Self::get_namespaces(&unit.package));
+        }
+
         self.push_completions(Self::get_namespaces(core));
+    }
+
+    fn push_locals(
+        &mut self,
+        compilation: &Compilation,
+        offset: u32,
+        include_terms: bool,
+        include_tys: bool,
+    ) {
+        self.push_sorted_completions(
+            compilation
+                .user_unit()
+                .ast
+                .locals
+                .get_all_at_offset(offset)
+                .iter()
+                .filter_map(|candidate| {
+                    local_completion(candidate, compilation, include_terms, include_tys)
+                })
+                .map(|item| (item, 0)),
+        );
     }
 
     fn push_stmt_keywords(&mut self) {
@@ -273,33 +382,58 @@ impl CompletionListBuilder {
     }
 
     fn get_callables<'a>(
-        package_id: Option<PackageId>,
-        package: &'a Package,
-        display: &'a CodeDisplay,
+        compilation: &'a Compilation,
+        package_id: PackageId,
         opens: &'a [(Rc<str>, Option<Rc<str>>)],
-        start_of_namespace: Option<u32>,
+        insert_open_at: Option<Range>,
         current_namespace_name: Option<Rc<str>>,
+        indent: &'a String,
     ) -> impl Iterator<Item = (CompletionItem, u32)> + 'a {
+        let package = &compilation
+            .package_store
+            .get(package_id)
+            .expect("package id should exist")
+            .package;
+        let display = CodeDisplay { compilation };
+
+        let is_user_package = compilation.user_package_id == package_id;
+
         package.items.values().filter_map(move |i| {
             // We only want items whose parents are namespaces
             if let Some(item_id) = i.parent {
                 if let Some(parent) = package.items.get(item_id) {
                     if let ItemKind::Namespace(namespace, _) = &parent.kind {
+                        if namespace.name.starts_with("Microsoft.Quantum.Unstable") {
+                            return None;
+                        }
+                        // If the item's visibility is internal, the item may be ignored
+                        if matches!(i.visibility, Visibility::Internal) {
+                            if !is_user_package {
+                                return None; // ignore item if not in the user's package
+                            }
+                            // ignore item if the user is not in the item's namespace
+                            match &current_namespace_name {
+                                Some(curr_ns) => {
+                                    if *curr_ns != namespace.name {
+                                        return None;
+                                    }
+                                }
+                                None => {
+                                    return None;
+                                }
+                            }
+                        }
                         return match &i.kind {
                             ItemKind::Callable(callable_decl) => {
                                 let name = callable_decl.name.name.as_ref();
-                                let detail = Some(
-                                    display
-                                        .hir_callable_decl(package_id, callable_decl)
-                                        .to_string(),
-                                );
+                                let detail =
+                                    Some(display.hir_callable_decl(callable_decl).to_string());
                                 // Everything that starts with a __ goes last in the list
                                 let sort_group = u32::from(name.starts_with("__"));
                                 let mut additional_edits = vec![];
                                 let mut qualification: Option<Rc<str>> = None;
                                 match &current_namespace_name {
                                     Some(curr_ns) if *curr_ns == namespace.name => {}
-                                    None => {}
                                     _ => {
                                         // open is an option of option of Rc<str>
                                         // the first option tells if it found an open with the namespace name
@@ -313,13 +447,14 @@ impl CompletionListBuilder {
                                         });
                                         qualification = match open {
                                             Some(alias) => alias.as_ref().cloned(),
-                                            None => match start_of_namespace {
+                                            None => match insert_open_at {
                                                 Some(start) => {
                                                     additional_edits.push((
-                                                        protocol::Span { start, end: start },
+                                                        start,
                                                         format!(
-                                                            "open {};\n    ",
-                                                            namespace.name.clone()
+                                                            "open {};{}",
+                                                            namespace.name.clone(),
+                                                            indent,
                                                         ),
                                                     ));
                                                     None
@@ -362,17 +497,15 @@ impl CompletionListBuilder {
     }
 
     fn get_core_callables<'a>(
+        compilation: &'a Compilation,
         package: &'a Package,
-        display: &'a CodeDisplay,
     ) -> impl Iterator<Item = (CompletionItem, u32)> + 'a {
+        let display = CodeDisplay { compilation };
+
         package.items.values().filter_map(move |i| match &i.kind {
             ItemKind::Callable(callable_decl) => {
                 let name = callable_decl.name.name.as_ref();
-                let detail = Some(
-                    display
-                        .hir_callable_decl(Some(PackageId::CORE), callable_decl)
-                        .to_string(),
-                );
+                let detail = Some(display.hir_callable_decl(callable_decl).to_string());
                 // Everything that starts with a __ goes last in the list
                 let sort_group = u32::from(name.starts_with("__"));
                 Some((
@@ -392,13 +525,76 @@ impl CompletionListBuilder {
 
     fn get_namespaces(package: &'_ Package) -> impl Iterator<Item = CompletionItem> + '_ {
         package.items.values().filter_map(|i| match &i.kind {
-            ItemKind::Namespace(namespace, _) => Some(CompletionItem::new(
-                namespace.name.to_string(),
-                CompletionItemKind::Module,
-            )),
+            ItemKind::Namespace(namespace, _)
+                if !namespace.name.starts_with("Microsoft.Quantum.Unstable") =>
+            {
+                Some(CompletionItem::new(
+                    namespace.name.to_string(),
+                    CompletionItemKind::Module,
+                ))
+            }
             _ => None,
         })
     }
+}
+
+fn local_completion(
+    candidate: &Local,
+    compilation: &Compilation,
+    include_terms: bool,
+    include_tys: bool,
+) -> Option<CompletionItem> {
+    let display = CodeDisplay { compilation };
+    let (kind, detail) = match &candidate.kind {
+        LocalKind::Item(item_id) => {
+            let item = compilation.resolve_item_relative_to_user_package(item_id);
+            let (detail, kind) = match &item.0.kind {
+                ItemKind::Callable(decl) => {
+                    if !include_terms {
+                        return None;
+                    }
+                    (
+                        Some(display.hir_callable_decl(decl).to_string()),
+                        CompletionItemKind::Function,
+                    )
+                }
+                ItemKind::Namespace(_, _) => {
+                    panic!("did not expect local namespace item")
+                }
+                ItemKind::Ty(_, udt) => {
+                    if !include_terms && !include_tys {
+                        return None;
+                    }
+                    (
+                        Some(display.hir_udt(udt).to_string()),
+                        CompletionItemKind::Interface,
+                    )
+                }
+            };
+            (kind, detail)
+        }
+        LocalKind::Var(node_id) => {
+            if !include_terms {
+                return None;
+            }
+            let detail = Some(display.name_ty_id(&candidate.name, *node_id).to_string());
+            (CompletionItemKind::Variable, detail)
+        }
+        LocalKind::TyParam(_) => {
+            if !include_tys {
+                return None;
+            }
+            (CompletionItemKind::TypeParameter, None)
+        }
+    };
+
+    Some(CompletionItem {
+        label: candidate.name.to_string(),
+        kind,
+        sort_text: None,
+        detail,
+        additional_text_edits: None,
+    })
 }
 
 struct ContextFinder {

@@ -1,24 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use qsc::{PackageType, TargetProfile};
+use qsc::line_column::Range;
+use qsc::{compile::Error, target::Profile, LanguageFeatures, PackageType};
 
-/// Workspace configuration
-#[derive(Clone, Debug, Default)]
+/// A change to the workspace configuration
+#[derive(Clone, Debug, Default, Copy)]
 pub struct WorkspaceConfigurationUpdate {
-    pub target_profile: Option<TargetProfile>,
+    pub target_profile: Option<Profile>,
     pub package_type: Option<PackageType>,
 }
 
-/// Represents a span of text used by the Language Server API
-#[derive(Debug, PartialEq)]
-pub struct Span {
-    pub start: u32,
-    pub end: u32,
+#[derive(Debug)]
+pub struct DiagnosticUpdate {
+    pub uri: String,
+    pub version: Option<u32>,
+    pub errors: Vec<Error>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-#[allow(clippy::module_name_repetitions)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CompletionItemKind {
     // It would have been nice to match the numeric values to the ones used by
     // VS Code and Monaco, but unfortunately those two disagree on the values.
@@ -28,22 +28,22 @@ pub enum CompletionItemKind {
     Keyword,
     Module,
     Property,
+    Variable,
+    TypeParameter,
 }
 
-#[derive(Debug)]
-#[allow(clippy::module_name_repetitions)]
+#[derive(Debug, Default)]
 pub struct CompletionList {
     pub items: Vec<CompletionItem>,
 }
 
 #[derive(Debug)]
-#[allow(clippy::module_name_repetitions)]
 pub struct CompletionItem {
     pub label: String,
     pub kind: CompletionItemKind,
     pub sort_text: Option<String>,
     pub detail: Option<String>,
-    pub additional_text_edits: Option<Vec<(Span, String)>>,
+    pub additional_text_edits: Option<Vec<(Range, String)>>,
 }
 
 impl CompletionItem {
@@ -59,16 +59,34 @@ impl CompletionItem {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Definition {
-    pub source: String,
-    pub offset: u32,
+impl PartialEq for CompletionItem {
+    // exclude sort text for comparison
+    fn eq(&self, other: &Self) -> bool {
+        self.label == other.label
+            && self.kind == other.kind
+            && self.detail == other.detail
+            && self.additional_text_edits == other.additional_text_edits
+    }
+}
+
+impl Eq for CompletionItem {}
+
+use std::hash::{Hash, Hasher};
+
+impl Hash for CompletionItem {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // use only user-visible fields for hashing to
+        // dedup items that look exactly the same.
+        self.label.hash(state);
+        self.kind.hash(state);
+        self.detail.hash(state);
+    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Hover {
     pub contents: String,
-    pub span: Span,
+    pub span: Range,
 }
 
 #[derive(Debug, PartialEq)]
@@ -87,6 +105,29 @@ pub struct SignatureInformation {
 
 #[derive(Debug, PartialEq)]
 pub struct ParameterInformation {
-    pub label: Span,
+    /// The start and end offsets into the [`SignatureInformation::label`].
+    /// They  use utf-8 or utf-16 code units depending on the
+    /// configuration of the language service.
+    pub label: (u32, u32),
     pub documentation: Option<String>,
+}
+
+#[derive(Default, Clone)]
+pub struct NotebookMetadata {
+    pub target_profile: Option<Profile>,
+    pub language_features: LanguageFeatures,
+}
+
+#[derive(Debug)]
+pub struct CodeLens {
+    pub range: Range,
+    pub command: CodeLensCommand,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CodeLensCommand {
+    Histogram,
+    Debug,
+    Run,
+    Estimate,
 }

@@ -2,10 +2,11 @@
 // Licensed under the MIT License.
 
 #![allow(clippy::too_many_lines)]
+#![allow(clippy::needless_raw_string_hashes)]
 
 use expect_test::{expect, Expect};
-use qsc_data_structures::span::Span;
-use qsc_frontend::compile::{self, compile, PackageStore, SourceMap, TargetProfile};
+use qsc_data_structures::{language_features::LanguageFeatures, span::Span};
+use qsc_frontend::compile::{self, compile, PackageStore, RuntimeCapabilityFlags, SourceMap};
 use qsc_hir::{
     hir::{ExprKind, NodeId, Stmt},
     visit::{walk_stmt, Visitor},
@@ -27,12 +28,13 @@ impl<'a> Visitor<'a> for StmtSpans {
 
 fn check(block_str: &str, expect: &Expect) {
     let mut store = PackageStore::new(compile::core());
-    let std = store.insert(compile::std(&store, TargetProfile::Full));
+    let std = store.insert(compile::std(&store, RuntimeCapabilityFlags::all()));
     let unit = compile(
         &store,
         &[std],
         SourceMap::new([], Some(block_str.into())),
-        TargetProfile::Full,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
     );
     assert!(unit.errors.is_empty(), "{:?}", unit.errors);
 
@@ -225,9 +227,7 @@ fn op_call_in_non_unit_block_forbidden() {
         &expect![[r#"
             [
                 NonUnitBlock(
-                    Prim(
-                        Int,
-                    ),
+                    "Int",
                     Span {
                         lo: 0,
                         hi: 26,

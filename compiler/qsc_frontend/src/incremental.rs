@@ -6,8 +6,8 @@ mod tests;
 
 use crate::{
     compile::{
-        self, preprocess, AstPackage, CompileUnit, Offsetter, PackageStore, SourceMap,
-        TargetProfile,
+        self, preprocess, AstPackage, CompileUnit, Offsetter, PackageStore, RuntimeCapabilityFlags,
+        SourceMap,
     },
     error::WithSource,
     lower::Lowerer,
@@ -16,11 +16,12 @@ use crate::{
 };
 use qsc_ast::{
     assigner::Assigner as AstAssigner,
-    ast::{self, Stmt, TopLevelNode},
+    ast::{self},
     mut_visit::MutVisitor,
     validate::Validator as AstValidator,
     visit::Visitor as AstVisitor,
 };
+use qsc_data_structures::language_features::LanguageFeatures;
 use qsc_hir::{
     assigner::Assigner as HirAssigner,
     hir::{self, PackageId},
@@ -37,7 +38,8 @@ pub struct Compiler {
     resolver: Resolver,
     checker: Checker,
     lowerer: Lowerer,
-    target: TargetProfile,
+    capabilities: RuntimeCapabilityFlags,
+    language_features: LanguageFeatures,
 }
 
 pub type Error = WithSource<compile::Error>;
@@ -56,7 +58,8 @@ impl Compiler {
     pub fn new(
         store: &PackageStore,
         dependencies: impl IntoIterator<Item = PackageId>,
-        target: TargetProfile,
+        capabilities: RuntimeCapabilityFlags,
+        language_features: LanguageFeatures,
     ) -> Self {
         let mut resolve_globals = resolve::GlobalTable::new();
         let mut typeck_globals = typeck::GlobalTable::new();
@@ -81,7 +84,8 @@ impl Compiler {
             resolver: Resolver::with_persistent_local_scope(resolve_globals, dropped_names),
             checker: Checker::new(typeck_globals),
             lowerer: Lowerer::new(),
-            target,
+            capabilities,
+            language_features,
         }
     }
 
@@ -95,34 +99,44 @@ impl Compiler {
     /// get information about the newly added items, or do other modifications.
     /// It is then the caller's responsibility to merge
     /// these packages into the current `CompileUnit`.
-    pub fn compile_fragments(
+    ///
+    /// This method calls an accumulator function with any errors returned
+    /// from each of the stages (parsing, lowering), instead of failing.
+    /// If the accumulator succeeds, compilation continues.
+    /// If the accumulator returns an error, compilation stops and the
+    /// error is returned to the caller.
+    pub fn compile_fragments<F, E>(
         &mut self,
         unit: &mut CompileUnit,
         source_name: &str,
         source_contents: &str,
-    ) -> Result<Increment, Vec<Error>> {
-        let (mut ast, parse_errors) =
-            Self::parse_fragments(&mut unit.sources, source_name, source_contents);
+        mut accumulate_errors: F,
+    ) -> Result<Increment, E>
+    where
+        F: FnMut(Vec<Error>) -> Result<(), E>,
+    {
+        let (mut ast, parse_errors) = Self::parse_fragments(
+            &mut unit.sources,
+            source_name,
+            source_contents,
+            self.language_features,
+        );
 
-        if !parse_errors.is_empty() {
-            return Err(parse_errors);
-        }
+        accumulate_errors(parse_errors)?;
 
-        let (hir, lower_errors) = self.resolve_check_lower(unit, &mut ast);
+        let (hir, errors) = self.resolve_check_lower(unit, &mut ast);
 
-        if lower_errors.is_empty() {
-            Ok(Increment {
-                ast: AstPackage {
-                    package: ast,
-                    names: self.resolver.names().clone(),
-                    tys: self.checker.table().clone(),
-                },
-                hir,
-            })
-        } else {
-            self.lowerer.clear_items();
-            Err(lower_errors)
-        }
+        accumulate_errors(errors)?;
+
+        Ok(Increment {
+            ast: AstPackage {
+                package: ast,
+                names: self.resolver.names().clone(),
+                locals: self.resolver.locals().clone(),
+                tys: self.checker.table().clone(),
+            },
+            hir,
+        })
     }
 
     /// Compiles an entry expression.
@@ -135,34 +149,33 @@ impl Compiler {
     /// get information about the newly added items, or do other modifications.
     /// It is then the caller's responsibility to merge
     /// these packages into the current `CompileUnit`.
-    pub fn compile_expr(
+    pub fn compile_entry_expr(
         &mut self,
         unit: &mut CompileUnit,
-        source_name: &str,
         source_contents: &str,
     ) -> Result<Increment, Vec<Error>> {
         let (mut ast, parse_errors) =
-            Self::parse_expr(&mut unit.sources, source_name, source_contents);
+            Self::parse_entry_expr(&mut unit.sources, source_contents, self.language_features);
 
         if !parse_errors.is_empty() {
             return Err(parse_errors);
         }
 
-        let (package, errors) = self.resolve_check_lower(unit, &mut ast);
+        let (hir, errors) = self.resolve_check_lower(unit, &mut ast);
 
-        if errors.is_empty() {
-            Ok(Increment {
-                ast: AstPackage {
-                    package: ast,
-                    names: self.resolver.names().clone(),
-                    tys: self.checker.table().clone(),
-                },
-                hir: package,
-            })
-        } else {
-            self.lowerer.clear_items();
-            Err(errors)
+        if !errors.is_empty() {
+            return Err(errors);
         }
+
+        Ok(Increment {
+            ast: AstPackage {
+                package: ast,
+                names: self.resolver.names().clone(),
+                locals: self.resolver.locals().clone(),
+                tys: self.checker.table().clone(),
+            },
+            hir,
+        })
     }
 
     pub fn update(&mut self, unit: &mut CompileUnit, new: Increment) {
@@ -174,6 +187,7 @@ impl Compiler {
         // replace the current tables instead of extending.
         unit.ast.names = new.ast.names;
         unit.ast.tys = new.ast.tys;
+        unit.ast.locals = new.ast.locals;
 
         // Update the HIR
         extend_hir(&mut unit.package, new.hir);
@@ -184,7 +198,7 @@ impl Compiler {
         unit: &mut CompileUnit,
         ast: &mut ast::Package,
     ) -> (hir::Package, Vec<Error>) {
-        let mut cond_compile = preprocess::Conditional::new(self.target);
+        let mut cond_compile = preprocess::Conditional::new(self.capabilities);
         cond_compile.visit_package(ast);
 
         self.ast_assigner.visit_package(ast);
@@ -199,11 +213,26 @@ impl Compiler {
 
         let package = self.lower(&mut unit.assigner, &*ast);
 
-        let errors: Vec<Error> = self
+        let errors = self
+            .resolver
             .drain_errors()
-            .into_iter()
+            .map(|e| compile::Error(e.into()))
+            .chain(
+                self.checker
+                    .drain_errors()
+                    .map(|e| compile::Error(e.into())),
+            )
+            .chain(
+                self.lowerer
+                    .drain_errors()
+                    .map(|e| compile::Error(e.into())),
+            )
             .map(|e| WithSource::from_map(&unit.sources, e))
-            .collect();
+            .collect::<Vec<_>>();
+
+        if !errors.is_empty() {
+            self.lowerer.clear_items();
+        }
 
         (package, errors)
     }
@@ -213,9 +242,6 @@ impl Compiler {
     /// Entry expressions are ignored.
     #[must_use]
     fn concat_ast(&mut self, mut left: ast::Package, right: ast::Package) -> ast::Package {
-        assert!(right.entry.is_none(), "package should not have entry expr");
-        assert!(left.entry.is_none(), "package should not have entry expr");
-
         let mut nodes = Vec::with_capacity(left.nodes.len() + right.nodes.len());
         nodes.extend(left.nodes.into_vec());
         nodes.extend(right.nodes.into_vec());
@@ -226,29 +252,22 @@ impl Compiler {
         left
     }
 
-    fn parse_expr(
+    fn parse_entry_expr(
         sources: &mut SourceMap,
-        source_name: &str,
         source_contents: &str,
+        language_features: LanguageFeatures,
     ) -> (ast::Package, Vec<Error>) {
-        let offset = sources.push(source_name.into(), source_contents.into());
+        let offset = sources.push("<entry>".into(), source_contents.into());
 
-        let (expr, errors) = qsc_parse::expr(source_contents);
-        let mut stmt = Box::new(Stmt {
-            id: ast::NodeId::default(),
-            span: expr.span,
-            kind: Box::new(ast::StmtKind::Expr(expr)),
-        });
+        let (mut expr, errors) = qsc_parse::expr(source_contents, language_features);
 
         let mut offsetter = Offsetter(offset);
-        offsetter.visit_stmt(&mut stmt);
-
-        let top_level_nodes = Box::new([TopLevelNode::Stmt(stmt)]);
+        offsetter.visit_expr(&mut expr);
 
         let package = ast::Package {
             id: ast::NodeId::default(),
-            nodes: top_level_nodes,
-            entry: None,
+            nodes: Box::default(),
+            entry: Some(expr),
         };
 
         (package, with_source(errors, sources, offset))
@@ -258,10 +277,11 @@ impl Compiler {
         sources: &mut SourceMap,
         source_name: &str,
         source_contents: &str,
+        features: LanguageFeatures,
     ) -> (ast::Package, Vec<Error>) {
         let offset = sources.push(source_name.into(), source_contents.into());
 
-        let (mut top_level_nodes, errors) = qsc_parse::top_level_nodes(source_contents);
+        let (mut top_level_nodes, errors) = qsc_parse::top_level_nodes(source_contents, features);
         let mut offsetter = Offsetter(offset);
         for node in &mut top_level_nodes {
             match node {
@@ -283,23 +303,6 @@ impl Compiler {
         self.lowerer
             .with(hir_assigner, self.resolver.names(), self.checker.table())
             .lower_package(package)
-    }
-
-    fn drain_errors(&mut self) -> Vec<compile::Error> {
-        self.resolver
-            .drain_errors()
-            .map(|e| compile::Error(e.into()))
-            .chain(
-                self.checker
-                    .drain_errors()
-                    .map(|e| compile::Error(e.into())),
-            )
-            .chain(
-                self.lowerer
-                    .drain_errors()
-                    .map(|e| compile::Error(e.into())),
-            )
-            .collect()
     }
 }
 

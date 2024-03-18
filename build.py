@@ -27,6 +27,7 @@ parser.add_argument(
     "--cli", action="store_true", help="Build the command-line compiler"
 )
 parser.add_argument("--pip", action="store_true", help="Build the pip wheel")
+parser.add_argument("--widgets", action="store_true", help="Build the Python widgets")
 parser.add_argument("--wasm", action="store_true", help="Build the WebAssembly files")
 parser.add_argument("--npm", action="store_true", help="Build the npm package")
 parser.add_argument("--play", action="store_true", help="Build the web playground")
@@ -77,6 +78,7 @@ if args.check_prereqs:
 build_all = (
     not args.cli
     and not args.pip
+    and not args.widgets
     and not args.wasm
     and not args.samples
     and not args.npm
@@ -86,6 +88,7 @@ build_all = (
 )
 build_cli = build_all or args.cli
 build_pip = build_all or args.pip
+build_widgets = build_all or args.widgets
 build_wasm = build_all or args.wasm
 build_samples = build_all or args.samples
 build_npm = build_all or args.npm
@@ -110,6 +113,7 @@ samples_src = os.path.join(root_dir, "samples")
 npm_src = os.path.join(root_dir, "npm")
 play_src = os.path.join(root_dir, "playground")
 pip_src = os.path.join(root_dir, "pip")
+widgets_src = os.path.join(root_dir, "widgets")
 wheels_dir = os.path.join(root_dir, "target", "wheels")
 vscode_src = os.path.join(root_dir, "vscode")
 jupyterlab_src = os.path.join(root_dir, "jupyterlab")
@@ -128,6 +132,33 @@ def step_end():
     print(f"build.py: Finished in {duration:.3f}s.")
     if os.getenv("GITHUB_ACTIONS") == "true":
         print(f"::endgroup::")
+
+
+def use_python_env(folder):
+    # Check if in a virtual environment
+    if (
+        os.environ.get("VIRTUAL_ENV") is None
+        and os.environ.get("CONDA_PREFIX") is None
+        and os.environ.get("CI") is None
+    ):
+        print("Not in a virtual python environment")
+
+        venv_dir = os.path.join(folder, ".venv")
+        # Create virtual environment under repo root
+        if not os.path.exists(venv_dir):
+            print(f"Creating a virtual environment under {venv_dir}")
+            venv.main([venv_dir])
+
+        # Check if .venv/bin/python exists, otherwise use .venv/Scripts/python.exe (Windows)
+        python_bin = os.path.join(venv_dir, "bin", "python")
+        if not os.path.exists(python_bin):
+            python_bin = os.path.join(venv_dir, "Scripts", "python.exe")
+        print(f"Using python from {python_bin}")
+    else:
+        # Already in a virtual environment, use current Python
+        python_bin = sys.executable
+
+    return python_bin
 
 
 if npm_install_needed:
@@ -181,28 +212,8 @@ if build_cli:
 
 if build_pip:
     step_start("Building the pip package")
-    # Check if in a virtual environment
-    if (
-        os.environ.get("VIRTUAL_ENV") is None
-        and os.environ.get("CONDA_PREFIX") is None
-        and os.environ.get("CI") is None
-    ):
-        print("Not in a virtual python environment")
 
-        venv_dir = os.path.join(pip_src, ".venv")
-        # Create virtual environment under repo root
-        if not os.path.exists(venv_dir):
-            print(f"Creating a virtual environment under {venv_dir}")
-            venv.main([venv_dir])
-
-        # Check if .venv/bin/python exists, otherwise use .venv/Scripts/python.exe (Windows)
-        python_bin = os.path.join(venv_dir, "bin", "python")
-        if not os.path.exists(python_bin):
-            python_bin = os.path.join(venv_dir, "Scripts", "python.exe")
-        print(f"Using python from {python_bin}")
-    else:
-        # Already in a virtual environment, use current Python
-        python_bin = sys.executable
+    python_bin = use_python_env(pip_src)
 
     # copy the process env vars
     pip_env: dict[str, str] = os.environ.copy()
@@ -241,7 +252,7 @@ if build_pip:
             "--force-reinstall",
             "--no-index",
             "--find-links=" + wheels_dir,
-            f"qsharp-lang",
+            f"qsharp",
         ]
         subprocess.run(pip_install_args, check=True, text=True, cwd=pip_src)
         pytest_args = [python_bin, "-m", "pytest"]
@@ -274,6 +285,23 @@ if build_pip:
             print("Could not import PyQIR, skipping tests")
     step_end()
 
+if build_widgets:
+    step_start("Building the Python widgets")
+
+    widgets_build_args = [
+        sys.executable,
+        "-m",
+        "pip",
+        "wheel",
+        "--no-deps",
+        "--wheel-dir",
+        wheels_dir,
+        widgets_src,
+    ]
+    subprocess.run(widgets_build_args, check=True, text=True, cwd=widgets_src)
+
+    step_end()
+
 if build_wasm:
     step_start("Building the wasm crate")
     # wasm-pack can't build for web and node in the same build, so need to run twice.
@@ -296,17 +324,39 @@ if build_wasm:
 
 if build_samples:
     step_start("Building qsharp samples")
+    project_directories = [
+        dir for dir in os.walk(samples_src) if "qsharp.json" in dir[2]
+    ]
+    single_file_directories = [
+        candidate
+        for candidate in os.walk(samples_src)
+        if all([not proj_dir[0] in candidate[0] for proj_dir in project_directories])
+    ]
+
     files = [
         os.path.join(dp, f)
-        for dp, _, filenames in os.walk(samples_src)
+        for dp, _, filenames in single_file_directories
         for f in filenames
         if os.path.splitext(f)[1] == ".qs"
+    ]
+    projects = [
+        os.path.join(dp, f)
+        for dp, _, filenames in project_directories
+        for f in filenames
+        if f == "qsharp.json"
     ]
     cargo_args = ["cargo", "run", "--bin", "qsc"]
     if build_type == "release":
         cargo_args.append("--release")
     for file in files:
         subprocess.run((cargo_args + ["--", file]), check=True, text=True, cwd=root_dir)
+    for project in projects:
+        subprocess.run(
+            (cargo_args + ["--", "--qsharp-json", project]),
+            check=True,
+            text=True,
+            cwd=root_dir,
+        )
     step_end()
 
 if build_npm:
@@ -348,32 +398,17 @@ if build_vscode:
     vscode_args = [npm_cmd, "run", "build"]
     subprocess.run(vscode_args, check=True, text=True, cwd=vscode_src)
     step_end()
+    if args.integration_tests:
+        step_start("Running the VS Code integration tests")
+        vscode_args = [npm_cmd, "test"]
+        subprocess.run(vscode_args, check=True, text=True, cwd=vscode_src)
+        step_end()
+
 
 if build_jupyterlab:
     step_start("Building the JupyterLab extension")
 
-    # Check if in a virtual environment
-    if (
-        os.environ.get("VIRTUAL_ENV") is None
-        and os.environ.get("CONDA_PREFIX") is None
-        and os.environ.get("CI") is None
-    ):
-        print("Not in a virtual python environment")
-
-        venv_dir = os.path.join(jupyterlab_src, ".venv")
-        # Create virtual environment under repo root
-        if not os.path.exists(venv_dir):
-            print(f"Creating a virtual environment under {venv_dir}")
-            venv.main([venv_dir])
-
-        # Check if .venv/bin/python exists, otherwise use .venv/Scripts/python.exe (Windows)
-        python_bin = os.path.join(venv_dir, "bin", "python")
-        if not os.path.exists(python_bin):
-            python_bin = os.path.join(venv_dir, "Scripts", "python.exe")
-        print(f"Using python from {python_bin}")
-    else:
-        # Already in a virtual environment, use current Python
-        python_bin = sys.executable
+    python_bin = use_python_env(jupyterlab_src)
 
     pip_build_args = [
         python_bin,
@@ -387,8 +422,85 @@ if build_jupyterlab:
     subprocess.run(pip_build_args, check=True, text=True, cwd=jupyterlab_src)
     step_end()
 
-if args.integration_tests:
-    step_start("Running the VS Code integration tests")
-    vscode_args = [npm_cmd, "test", "--", "--verbose"]
-    subprocess.run(vscode_args, check=True, text=True, cwd=vscode_src)
+if build_pip and build_widgets and args.integration_tests:
+    step_start("Running notebook samples integration tests")
+    # Find all notebooks in the samples directory. Skip the basic sample and the azure submission sample, since those won't run
+    # nicely in automation.
+    notebook_files = [
+        os.path.join(dp, f)
+        for dp, _, filenames in os.walk(samples_src)
+        for f in filenames
+        if f.endswith(".ipynb")
+        and not (f.startswith("sample.") or f.startswith("azure_submission."))
+    ]
+    python_bin = use_python_env(samples_src)
+
+    # copy the process env vars
+    pip_env: dict[str, str] = os.environ.copy()
+
+    # Install the qsharp package
+    pip_install_args = [
+        python_bin,
+        "-m",
+        "pip",
+        "install",
+        "--force-reinstall",
+        "--no-index",
+        "--find-links=" + wheels_dir,
+        f"qsharp",
+    ]
+    subprocess.run(pip_install_args, check=True, text=True, cwd=pip_src)
+
+    # Install the widgets package from the folder so dependencies are installed properly
+    pip_install_args = [
+        python_bin,
+        "-m",
+        "pip",
+        "install",
+        widgets_src,
+    ]
+    subprocess.run(
+        pip_install_args, check=True, text=True, cwd=widgets_src, env=pip_env
+    )
+
+    # Install other dependencies
+    pip_install_args = [
+        python_bin,
+        "-m",
+        "pip",
+        "install",
+        "ipykernel",
+        "nbconvert",
+        "pandas",
+    ]
+    subprocess.run(pip_install_args, check=True, text=True, cwd=root_dir, env=pip_env)
+
+    for notebook in notebook_files:
+        print(f"Running {notebook}")
+        # Run the notebook process, capturing stdout and only displaying it if there is an error
+        result = subprocess.run(
+            [
+                python_bin,
+                "-m",
+                "nbconvert",
+                "--to",
+                "notebook",
+                "--stdout",
+                "--ExecutePreprocessor.timeout=60",
+                "--sanitize-html",
+                "--execute",
+                notebook,
+            ],
+            check=False,
+            text=True,
+            cwd=root_dir,
+            env=pip_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+        )
+        if result.returncode != 0:
+            print(result.stdout)
+            raise Exception(f"Error running {notebook}")
+
     step_end()

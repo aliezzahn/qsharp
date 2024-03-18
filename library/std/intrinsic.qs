@@ -152,11 +152,14 @@ namespace Microsoft.Quantum.Intrinsic {
     /// # Remarks
     /// $$
     /// \begin{align}
-    ///     e^{i \theta [P_0 \otimes P_1 \cdots P_{N-1}]},
+    ///     H \mathrel{:=}
+    ///     \frac{1}{\sqrt{2}}
+    ///     \begin{bmatrix}
+    ///         1 & 1 \\\\
+    ///         1 & -1
+    ///     \end{bmatrix}
     /// \end{align}
     /// $$
-    /// where $P_i$ is the $i$th element of `paulis`, and where
-    /// $N = $`Length(paulis)`.
     operation H(qubit : Qubit) : Unit is Adj + Ctl {
         body ... {
             __quantum__qis__h__body(qubit);
@@ -226,8 +229,40 @@ namespace Microsoft.Quantum.Intrinsic {
     /// ```qsharp
     /// Measure([PauliZ], [qubit]);
     /// ```
+    @Config(Unrestricted)
     operation M(qubit : Qubit) : Result {
         __quantum__qis__m__body(qubit)
+    }
+
+    /// # Summary
+    /// Performs a measurement of a single qubit in the
+    /// Pauli _Z_ basis.
+    ///
+    /// # Input
+    /// ## qubit
+    /// Qubit to be measured.
+    ///
+    /// # Output
+    /// `Zero` if the +1 eigenvalue is observed, and `One` if
+    /// the -1 eigenvalue is observed.
+    ///
+    /// # Remarks
+    /// The output result is given by
+    /// the distribution
+    /// $$
+    /// \begin{align}
+    ///     \Pr(\texttt{Zero} | \ket{\psi}) =
+    ///         \braket{\psi | 0} \braket{0 | \psi}.
+    /// \end{align}
+    /// $$
+    ///
+    /// Equivalent to:
+    /// ```qsharp
+    /// Measure([PauliZ], [qubit]);
+    /// ```
+    @Config(Base)
+    operation M(qubit : Qubit) : Result {
+        Measure([PauliZ], [qubit])
     }
 
     /// # Summary
@@ -266,6 +301,7 @@ namespace Microsoft.Quantum.Intrinsic {
     ///
     /// If the basis array and qubit array are different lengths, then the
     /// operation will fail.
+    @Config(Unrestricted)
     operation Measure(bases : Pauli[], qubits : Qubit[]) : Result {
         if Length(bases) != Length(qubits) {
             fail "Arrays 'bases' and 'qubits' must be of the same length.";
@@ -290,6 +326,62 @@ namespace Microsoft.Quantum.Intrinsic {
             }
             __quantum__qis__mresetz__body(aux)
         }
+    }
+
+    /// # Summary
+    /// Performs a joint measurement of one or more qubits in the
+    /// specified Pauli bases.
+    ///
+    /// # Input
+    /// ## bases
+    /// Array of single-qubit Pauli values indicating the tensor product
+    /// factors on each qubit.
+    /// ## qubits
+    /// Register of qubits to be measured.
+    ///
+    /// # Output
+    /// `Zero` if the +1 eigenvalue is observed, and `One` if
+    /// the -1 eigenvalue is observed.
+    ///
+    /// # Remarks
+    /// The output result is given by the distribution:
+    /// $$
+    /// \begin{align}
+    ///     \Pr(\texttt{Zero} | \ket{\psi}) =
+    ///         \frac12 \braket{
+    ///             \psi \mid|
+    ///             \left(
+    ///                 \boldone + P_0 \otimes P_1 \otimes \cdots \otimes P_{N-1}
+    ///             \right) \mid|
+    ///             \psi
+    ///         },
+    /// \end{align}
+    /// $$
+    /// where $P_i$ is the $i$th element of `bases`, and where
+    /// $N = \texttt{Length}(\texttt{bases})$.
+    /// That is, measurement returns a `Result` $d$ such that the eigenvalue of the
+    /// observed measurement effect is $(-1)^d$.
+    ///
+    /// If the basis array and qubit array are different lengths, then the
+    /// operation will fail.
+    @Config(Base)
+    operation Measure(bases : Pauli[], qubits : Qubit[]) : Result {
+        if Length(bases) != Length(qubits) {
+            fail "Arrays 'bases' and 'qubits' must be of the same length.";
+        }
+        // Because Base Profile does not allow qubit reuse, we always allocate a new qubit
+        // and use entanglement to measure the state while collapsing the original target(s) and
+        // leaving it available for later operations.
+        use aux = Qubit();
+        within {
+            H(aux);
+        }
+        apply {
+            for i in 0..Length(bases)-1 {
+                EntangleForJointMeasure(bases[i], aux, qubits[i]);
+            }
+        }
+        __quantum__qis__mresetz__body(aux)
     }
 
     /// # Summary

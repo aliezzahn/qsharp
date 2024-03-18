@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![allow(clippy::needless_raw_string_hashes)]
+
 use std::f64::consts;
 
 use crate::backend::{Backend, SparseSim};
@@ -8,59 +10,16 @@ use crate::debug::map_hir_package_to_fir;
 use crate::tests::eval_expr;
 use crate::{
     output::{GenericReceiver, Receiver},
-    tests::get_global,
-    val::{GlobalId, Value},
-    Error, NodeLookup,
+    val::Value,
+    Error,
 };
 use expect_test::{expect, Expect};
 use indoc::indoc;
 use num_bigint::BigInt;
-use qsc_data_structures::index_map::IndexMap;
-use qsc_fir::fir::{BlockId, ExprId, PackageId, PatId, StmtId};
-use qsc_frontend::compile::{self, compile, PackageStore, SourceMap, TargetProfile};
+use qsc_data_structures::language_features::LanguageFeatures;
+use qsc_fir::fir;
+use qsc_frontend::compile::{self, compile, PackageStore, RuntimeCapabilityFlags, SourceMap};
 use qsc_passes::{run_core_passes, run_default_passes, PackageType};
-
-struct Lookup<'a> {
-    fir_store: &'a IndexMap<PackageId, qsc_fir::fir::Package>,
-}
-
-impl<'a> Lookup<'a> {
-    fn get_package(&self, package: PackageId) -> &qsc_fir::fir::Package {
-        self.fir_store
-            .get(package)
-            .expect("Package should be in FIR store")
-    }
-}
-
-impl<'a> NodeLookup for Lookup<'a> {
-    fn get(&self, id: GlobalId) -> Option<crate::Global<'a>> {
-        get_global(self.fir_store, id)
-    }
-    fn get_block(&self, package: PackageId, id: BlockId) -> &qsc_fir::fir::Block {
-        self.get_package(package)
-            .blocks
-            .get(id)
-            .expect("BlockId should have been lowered")
-    }
-    fn get_expr(&self, package: PackageId, id: ExprId) -> &qsc_fir::fir::Expr {
-        self.get_package(package)
-            .exprs
-            .get(id)
-            .expect("ExprId should have been lowered")
-    }
-    fn get_pat(&self, package: PackageId, id: PatId) -> &qsc_fir::fir::Pat {
-        self.get_package(package)
-            .pats
-            .get(id)
-            .expect("PatId should have been lowered")
-    }
-    fn get_stmt(&self, package: PackageId, id: StmtId) -> &qsc_fir::fir::Stmt {
-        self.get_package(package)
-            .stmts
-            .get(id)
-            .expect("StmtId should have been lowered")
-    }
-}
 
 #[derive(Default)]
 struct CustomSim {
@@ -176,10 +135,6 @@ impl Backend for CustomSim {
         self.sim.qubit_is_zero(q)
     }
 
-    fn reinit(&mut self) {
-        self.sim.reinit();
-    }
-
     fn custom_intrinsic(&mut self, name: &str, arg: Value) -> Option<Result<Value, String>> {
         match name {
             "Add1" => Some(Ok(Value::Int(arg.unwrap_int() + 1))),
@@ -196,26 +151,32 @@ fn check_intrinsic(file: &str, expr: &str, out: &mut impl Receiver) -> Result<Va
     let core_fir = fir_lowerer.lower_package(&core.package);
     let mut store = PackageStore::new(core);
 
-    let mut std = compile::std(&store, TargetProfile::Full);
+    let mut std = compile::std(&store, RuntimeCapabilityFlags::all());
     assert!(std.errors.is_empty());
     assert!(run_default_passes(
         store.core(),
         &mut std,
         PackageType::Lib,
-        TargetProfile::Full
+        RuntimeCapabilityFlags::all()
     )
     .is_empty());
     let std_fir = fir_lowerer.lower_package(&std.package);
     let std_id = store.insert(std);
 
     let sources = SourceMap::new([("test".into(), file.into())], Some(expr.into()));
-    let mut unit = compile(&store, &[std_id], sources, TargetProfile::Full);
+    let mut unit = compile(
+        &store,
+        &[std_id],
+        sources,
+        RuntimeCapabilityFlags::all(),
+        LanguageFeatures::default(),
+    );
     assert!(unit.errors.is_empty());
     assert!(run_default_passes(
         store.core(),
         &mut unit,
         PackageType::Lib,
-        TargetProfile::Full
+        RuntimeCapabilityFlags::all()
     )
     .is_empty());
     let unit_fir = fir_lowerer.lower_package(&unit.package);
@@ -223,7 +184,7 @@ fn check_intrinsic(file: &str, expr: &str, out: &mut impl Receiver) -> Result<Va
 
     let id = store.insert(unit);
 
-    let mut fir_store = IndexMap::new();
+    let mut fir_store = fir::PackageStore::new();
     fir_store.insert(
         map_hir_package_to_fir(qsc_hir::hir::PackageId::CORE),
         core_fir,
@@ -231,13 +192,10 @@ fn check_intrinsic(file: &str, expr: &str, out: &mut impl Receiver) -> Result<Va
     fir_store.insert(map_hir_package_to_fir(std_id), std_fir);
     fir_store.insert(map_hir_package_to_fir(id), unit_fir);
 
-    let lookup = Lookup {
-        fir_store: &fir_store,
-    };
     eval_expr(
         entry,
         &mut CustomSim::default(),
-        &lookup,
+        &fir_store,
         map_hir_package_to_fir(id),
         out,
     )
@@ -298,7 +256,7 @@ fn dump_machine() {
         "Microsoft.Quantum.Diagnostics.DumpMachine()",
         &expect![[r#"
             STATE:
-            |0⟩: 1+0i
+            |0⟩: 1.0000+0.0000𝑖
         "#]],
     );
 }
@@ -313,7 +271,7 @@ fn dump_machine_qubit_count() {
         }"},
         &expect![[r#"
             STATE:
-            |0000⟩: 1+0i
+            |0000⟩: 1.0000+0.0000𝑖
         "#]],
     );
 }
@@ -330,8 +288,178 @@ fn dump_machine_endianness() {
         }"},
         &expect![[r#"
             STATE:
-            |0010⟩: 1+0i
+            |0100⟩: 1.0000+0.0000𝑖
         "#]],
+    );
+}
+
+#[test]
+fn dump_register_all_qubits() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use qs = Qubit[4];
+            X(qs[1]);
+            Microsoft.Quantum.Diagnostics.DumpRegister(qs);
+            X(qs[1]);
+        }"},
+        &expect![[r#"
+            STATE:
+            |0100⟩: 1.0000+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_subset_qubits() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use qs = Qubit[4];
+            X(qs[1]);
+            Microsoft.Quantum.Diagnostics.DumpRegister([qs[1], qs[2]]);
+            X(qs[1]);
+        }"},
+        &expect![[r#"
+            STATE:
+            |10⟩: 1.0000+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_subset_entangled_within_subset_is_separable() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use (q1, q2, q3) = (Qubit(), Qubit(), Qubit());
+            H(q1);
+            CNOT(q1, q3);
+            Microsoft.Quantum.Diagnostics.DumpRegister([q1, q3]);
+            Reset(q1);
+            Reset(q2);
+            Reset(q3);
+        }"},
+        &expect![[r#"
+            STATE:
+            |00⟩: 0.7071+0.0000𝑖
+            |11⟩: 0.7071+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_subset_entangled_with_other_qubits_not_separable() {
+    check_intrinsic_result(
+        "",
+        indoc! {"{
+            use (q1, q2, q3) = (Qubit(), Qubit(), Qubit());
+            H(q1);
+            CNOT(q1, q3);
+            Microsoft.Quantum.Diagnostics.DumpRegister([q1, q2]);
+        }"},
+        &expect!["qubits are not separable"],
+    );
+}
+
+#[test]
+fn dump_register_other_qubits_superposition_is_separable() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use qs = Qubit[3];
+            H(qs[0]);
+            H(qs[2]);
+            Microsoft.Quantum.Diagnostics.DumpRegister(qs[...1]);
+            ResetAll(qs);
+        }"},
+        &expect![[r#"
+            STATE:
+            |00⟩: 0.7071+0.0000𝑖
+            |10⟩: 0.7071+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_other_qubits_one_state_is_separable() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use qs = Qubit[3];
+            H(qs[0]);
+            X(qs[2]);
+            Microsoft.Quantum.Diagnostics.DumpRegister(qs[...1]);
+            ResetAll(qs);
+        }"},
+        &expect![[r#"
+            STATE:
+            |00⟩: 0.7071+0.0000𝑖
+            |10⟩: 0.7071+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_qubits_reorder_output() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use qs = Qubit[5];
+            H(qs[0]);
+            X(qs[2]);
+            Microsoft.Quantum.Diagnostics.DumpMachine();
+            Microsoft.Quantum.Diagnostics.DumpRegister(qs[2..-1...]);
+            ResetAll(qs);
+        }"},
+        &expect![[r#"
+            STATE:
+            |00100⟩: 0.7071+0.0000𝑖
+            |10100⟩: 0.7071+0.0000𝑖
+            STATE:
+            |100⟩: 0.7071+0.0000𝑖
+            |101⟩: 0.7071+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_qubits_reorder_output_should_be_sorted() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use qs = Qubit[5];
+            H(qs[0]);
+            H(qs[2]);
+            Microsoft.Quantum.Diagnostics.DumpMachine();
+            Microsoft.Quantum.Diagnostics.DumpRegister(qs[0..2..3]);
+            ResetAll(qs);
+        }"},
+        &expect![[r#"
+            STATE:
+            |00000⟩: 0.5000+0.0000𝑖
+            |00100⟩: 0.5000+0.0000𝑖
+            |10000⟩: 0.5000+0.0000𝑖
+            |10100⟩: 0.5000+0.0000𝑖
+            STATE:
+            |00⟩: 0.5000+0.0000𝑖
+            |01⟩: 0.5000+0.0000𝑖
+            |10⟩: 0.5000+0.0000𝑖
+            |11⟩: 0.5000+0.0000𝑖
+        "#]],
+    );
+}
+
+#[test]
+fn dump_register_qubits_not_unique_fails() {
+    check_intrinsic_result(
+        "",
+        indoc! {"{
+            use qs = Qubit[3];
+            H(qs[0]);
+            Microsoft.Quantum.Diagnostics.DumpRegister([qs[0], qs[0]]);
+        }"},
+        &expect!["qubits in invocation are not unique"],
     );
 }
 
@@ -1094,7 +1222,7 @@ fn qubit_nested_bind_not_released() {
         }"},
         &expect![[r#"
             STATE:
-            |10⟩: 1+0i
+            |01⟩: 1.0000+0.0000𝑖
         "#]],
     );
 }
@@ -1119,7 +1247,7 @@ fn qubit_not_unique_two_qubit_error() {
             use q = Qubit();
             CNOT(q , q);
         }"},
-        &expect!["qubits in gate invocation are not unique"],
+        &expect!["qubits in invocation are not unique"],
     );
 }
 
@@ -1131,7 +1259,7 @@ fn qubit_not_unique_two_qubit_rotation_error() {
             use q = Qubit();
             Rxx(0.1, q, q);
         }"},
-        &expect!["qubits in gate invocation are not unique"],
+        &expect!["qubits in invocation are not unique"],
     );
 }
 
@@ -1144,7 +1272,7 @@ fn qubit_not_unique_three_qubit_error_first_second() {
             use a = Qubit();
             CCNOT(q , q, a);
         }"},
-        &expect!["qubits in gate invocation are not unique"],
+        &expect!["qubits in invocation are not unique"],
     );
 }
 
@@ -1157,7 +1285,7 @@ fn qubit_not_unique_three_qubit_error_first_third() {
             use a = Qubit();
             CCNOT(q , a, q);
         }"},
-        &expect!["qubits in gate invocation are not unique"],
+        &expect!["qubits in invocation are not unique"],
     );
 }
 
@@ -1170,6 +1298,78 @@ fn qubit_not_unique_three_qubit_error_second_third() {
             use a = Qubit();
             CCNOT(a , q, q);
         }"},
-        &expect!["qubits in gate invocation are not unique"],
+        &expect!["qubits in invocation are not unique"],
+    );
+}
+
+#[test]
+fn single_qubit_rotation_nan_error() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use q = Qubit();
+            Rx(Microsoft.Quantum.Math.ArcSin(2.0), q);
+        }"},
+        &expect!["invalid rotation angle: NaN"],
+    );
+}
+
+#[test]
+fn two_qubit_rotation_nan_error() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use (q1, q2) = (Qubit(), Qubit());
+            Rxx(Microsoft.Quantum.Math.ArcSin(2.0), q1, q2);
+        }"},
+        &expect!["invalid rotation angle: NaN"],
+    );
+}
+
+#[test]
+fn single_qubit_rotation_inf_error() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use q = Qubit();
+            Rx(-Microsoft.Quantum.Math.Log(0.0), q);
+        }"},
+        &expect!["invalid rotation angle: inf"],
+    );
+}
+
+#[test]
+fn two_qubit_rotation_inf_error() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use (q1, q2) = (Qubit(), Qubit());
+            Rxx(-Microsoft.Quantum.Math.Log(0.0), q1, q2);
+        }"},
+        &expect!["invalid rotation angle: inf"],
+    );
+}
+
+#[test]
+fn single_qubit_rotation_neg_inf_error() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use q = Qubit();
+            Rx(Microsoft.Quantum.Math.Log(0.0), q);
+        }"},
+        &expect!["invalid rotation angle: -inf"],
+    );
+}
+
+#[test]
+fn two_qubit_rotation_neg_inf_error() {
+    check_intrinsic_output(
+        "",
+        indoc! {"{
+            use (q1, q2) = (Qubit(), Qubit());
+            Rxx(Microsoft.Quantum.Math.Log(0.0), q1, q2);
+        }"},
+        &expect!["invalid rotation angle: -inf"],
     );
 }

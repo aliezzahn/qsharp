@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::{
-    hir::{Item, ItemId, ItemKind, Package, PackageId, Visibility},
+    hir::{Item, ItemId, ItemKind, ItemStatus, Package, PackageId, SpecBody, SpecGen, Visibility},
     ty::Scheme,
 };
 use qsc_data_structures::index_map;
@@ -13,6 +13,7 @@ pub struct Global {
     pub namespace: Rc<str>,
     pub name: Rc<str>,
     pub visibility: Visibility,
+    pub status: ItemStatus,
     pub kind: Kind,
 }
 
@@ -29,6 +30,7 @@ pub struct Ty {
 pub struct Term {
     pub id: ItemId,
     pub scheme: Scheme,
+    pub intrinsic: bool,
 }
 
 #[derive(Default)]
@@ -95,15 +97,18 @@ impl PackageIter<'_> {
             package: self.id,
             item: item.id,
         };
+        let status = ItemStatus::from_attrs(item.attrs.as_ref());
 
         match (&item.kind, &parent) {
             (ItemKind::Callable(decl), Some(ItemKind::Namespace(namespace, _))) => Some(Global {
                 namespace: Rc::clone(&namespace.name),
                 name: Rc::clone(&decl.name.name),
                 visibility: item.visibility,
+                status,
                 kind: Kind::Term(Term {
                     id,
                     scheme: decl.scheme(),
+                    intrinsic: decl.body.body == SpecBody::Gen(SpecGen::Intrinsic),
                 }),
             }),
             (ItemKind::Ty(name, def), Some(ItemKind::Namespace(namespace, _))) => {
@@ -111,9 +116,11 @@ impl PackageIter<'_> {
                     namespace: Rc::clone(&namespace.name),
                     name: Rc::clone(&name.name),
                     visibility: item.visibility,
+                    status,
                     kind: Kind::Term(Term {
                         id,
                         scheme: def.cons_scheme(id),
+                        intrinsic: false,
                     }),
                 });
 
@@ -121,6 +128,7 @@ impl PackageIter<'_> {
                     namespace: Rc::clone(&namespace.name),
                     name: Rc::clone(&name.name),
                     visibility: item.visibility,
+                    status,
                     kind: Kind::Ty(Ty { id }),
                 })
             }
@@ -128,6 +136,7 @@ impl PackageIter<'_> {
                 namespace: "".into(),
                 name: Rc::clone(&ident.name),
                 visibility: Visibility::Public,
+                status,
                 kind: Kind::Namespace,
             }),
             _ => None,

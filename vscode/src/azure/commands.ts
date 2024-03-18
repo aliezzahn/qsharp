@@ -23,6 +23,7 @@ import {
   QuantumUris,
   checkCorsConfig,
   compileToBitcode,
+  useProxy,
 } from "./networkRequests";
 import { getQirForActiveWindow } from "../qirGeneration";
 import { targetSupportQir } from "./providerProperties";
@@ -135,15 +136,15 @@ export async function initAzureWorkspaces(context: vscode.ExtensionContext) {
           : await compileToBitcode(compilerService, qir, providerId);
         // End of compilation to be removed
 
-        const token = await getTokenForWorkspace(treeItem.workspace);
-        if (!token) return;
-
         const quantumUris = new QuantumUris(
           treeItem.workspace.endpointUri,
           treeItem.workspace.id,
         );
 
         try {
+          const token = await getTokenForWorkspace(treeItem.workspace);
+          if (!token) return;
+
           const jobId = await submitJob(
             token,
             quantumUris,
@@ -158,12 +159,11 @@ export async function initAzureWorkspaces(context: vscode.ExtensionContext) {
           }
         } catch (e: any) {
           log.error("Failed to submit job. ", e);
-          vscode.window.showErrorMessage(
-            "Failed to submit the job to Azure. " +
-              "Ensure CORS is configured correctly on the workspace storage account. " +
-              `See ${corsDocsUri} for more information.`,
-          );
-          return;
+
+          vscode.window.showErrorMessage("Failed to submit the job to Azure.", {
+            modal: true,
+            detail: e instanceof Error ? e.message : undefined,
+          });
         }
       },
     ),
@@ -228,7 +228,7 @@ export async function initAzureWorkspaces(context: vscode.ExtensionContext) {
         const token = await getTokenForWorkspace(workspace);
         if (!token) return;
         try {
-          await checkCorsConfig(token, quantumUris);
+          if (!useProxy) await checkCorsConfig(token, quantumUris);
         } catch (e: any) {
           log.debug("CORS check failed. ", e);
 
@@ -280,15 +280,15 @@ export async function initAzureWorkspaces(context: vscode.ExtensionContext) {
         const fileUri = vscode.Uri.parse(job.outputDataUri);
         const [, container, blob] = fileUri.path.split("/");
 
-        const token = await getTokenForWorkspace(treeItem.workspace);
-        if (!token) return;
-
         const quantumUris = new QuantumUris(
           treeItem.workspace.endpointUri,
           treeItem.workspace.id,
         );
 
         try {
+          const token = await getTokenForWorkspace(treeItem.workspace);
+          if (!token) return;
+
           const file = await getJobFiles(container, blob, token, quantumUris);
           if (file) {
             const doc = await vscode.workspace.openTextDocument({
@@ -300,11 +300,12 @@ export async function initAzureWorkspaces(context: vscode.ExtensionContext) {
         } catch (e: any) {
           log.error("Failed to download result file. ", e);
           vscode.window.showErrorMessage(
-            "Failed to download the results file. " +
-              "Ensure CORS is configured correctly on the workspace storage account. " +
-              `See ${corsDocsUri} for more information.`,
+            "Failed to download the results file.",
+            {
+              modal: true,
+              detail: e instanceof Error ? e.message : undefined,
+            },
           );
-          return;
         }
       },
     ),
