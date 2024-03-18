@@ -16,7 +16,7 @@ mod replace_qubit_allocation;
 mod spec_gen;
 
 use callable_limits::CallableLimits;
-pub use capabilitiesck::check_supported_capabilities;
+pub use capabilitiesck::{check_supported_capabilities, Error as CapsError};
 use entry_point::generate_entry_expr;
 use loop_unification::LoopUni;
 use miette::Diagnostic;
@@ -38,6 +38,7 @@ use thiserror::Error;
 pub enum Error {
     BaseProfCk(baseprofck::Error),
     BorrowCk(borrowck::Error),
+    CapabilitiesCk(capabilitiesck::Error),
     CallableLimits(callable_limits::Error),
     ConjInvert(conjugate_invert::Error),
     EntryPoint(entry_point::Error),

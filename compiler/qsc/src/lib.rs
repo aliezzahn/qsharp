@@ -34,7 +34,7 @@ pub mod project {
 
 pub use qsc_data_structures::{language_features::LanguageFeatures, span::Span};
 
-pub use qsc_passes::{PackageType, PassContext};
+pub use qsc_passes::{check_supported_capabilities, PackageType, PassContext};
 
 pub mod line_column {
     pub use qsc_data_structures::line_column::{Encoding, Position, Range};

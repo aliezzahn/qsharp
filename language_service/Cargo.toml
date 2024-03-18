@@ -20,7 +20,10 @@ log = { workspace = true }
 miette = { workspace = true }
 qsc = { path = "../compiler/qsc" }
 rustc-hash = { workspace = true }
+qsc_eval = { path = "../compiler/qsc_eval" }
+qsc_passes = { path = "../compiler/qsc_passes" }
 qsc_project = { path = "../compiler/qsc_project", features = ["async"] }
+qsc_rca = { path = "../compiler/qsc_rca" }
 async-trait = { workspace = true }
 
 [lints]

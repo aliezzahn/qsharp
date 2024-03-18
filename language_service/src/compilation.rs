@@ -3,16 +3,22 @@
 
 use log::trace;
 use qsc::{
-    ast,
+    ast, check_supported_capabilities,
     compile::{self, Error},
     display::Lookup,
+    error::WithSource,
+    fir::PackageStore as FirStore,
     hir::{self, PackageId},
     incremental::Compiler,
     line_column::{Encoding, Position},
     resolve,
     target::Profile,
-    CompileUnit, LanguageFeatures, PackageStore, PackageType, SourceMap, Span,
+    CompileUnit, LanguageFeatures, PackageStore, PackageType, RuntimeCapabilityFlags, SourceMap,
+    Span,
 };
+use qsc_eval::{debug::map_hir_package_to_fir, lower::Lowerer};
+use qsc_passes::Error as PassError;
+use qsc_rca::Analyzer;
 use std::sync::Arc;
 
 /// Represents an immutable compilation state that can be used
@@ -60,7 +66,7 @@ impl Compilation {
         let std_package_id =
             package_store.insert(compile::std(&package_store, target_profile.into()));
 
-        let (unit, errors) = compile::compile(
+        let (unit, mut errors) = compile::compile(
             &package_store,
             &[std_package_id],
             source_map,
@@ -70,6 +76,37 @@ impl Compilation {
         );
 
         let package_id = package_store.insert(unit);
+
+        if errors.is_empty() {
+            let mut lowerer = Lowerer::new();
+            let mut fir_store = FirStore::new();
+            for (id, unit) in &package_store {
+                fir_store.insert(
+                    map_hir_package_to_fir(id),
+                    lowerer.lower_package(&unit.package),
+                );
+            }
+            let srcs = SourceMap::new(sources.iter().map(|(x, y)| (x.clone(), y.clone())), None);
+            let analyzer = Analyzer::init(&fir_store);
+            let compute_properties = analyzer.analyze_all();
+            let fir_package_id = map_hir_package_to_fir(package_id);
+            let fir_package = fir_store.get(fir_package_id);
+            let package_compute_properties = compute_properties.get(fir_package_id);
+            let capabilities = RuntimeCapabilityFlags::ForwardBranching
+                | RuntimeCapabilityFlags::IntegerComputations;
+            let mut caps_errors =
+                check_supported_capabilities(fir_package, package_compute_properties, capabilities);
+            let mut caps_errors = caps_errors
+                .drain(..)
+                .map(|e| {
+                    WithSource::from_map(
+                        &srcs,
+                        compile::ErrorKind::Pass(PassError::CapabilitiesCk(e)),
+                    )
+                })
+                .collect();
+            errors.append(&mut caps_errors);
+        }
 
         Self {
             package_store,

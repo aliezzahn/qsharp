@@ -1138,7 +1138,10 @@ dependencies = [
  "log",
  "miette",
  "qsc",
+ "qsc_eval",
+ "qsc_passes",
  "qsc_project",
+ "qsc_rca",
  "rustc-hash",
  "tokio",
 ]
