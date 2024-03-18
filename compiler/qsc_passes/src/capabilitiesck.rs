@@ -229,7 +229,7 @@ impl<'a> Checker<'a> {
                 };
                 let mut spec_level_errors = generate_errors_from_runtime_features(
                     missing_spec_level_runtime_features,
-                    callable_decl.span,
+                    callable_decl.name.span,
                 );
                 self.errors.append(&mut spec_level_errors);
                 return;
