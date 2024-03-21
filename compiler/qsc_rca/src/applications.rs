@@ -3,10 +3,11 @@
 
 use crate::{
     common::{initialize_locals_map, InputParam, InputParamIndex, Local, LocalKind, LocalsLookup},
-    scaffolding::PackageComputeProperties,
+    scaffolding::InternalPackageComputeProperties,
     ApplicationGeneratorSet, ComputeKind, QuantumProperties, RuntimeFeatureFlags, RuntimeKind,
     ValueKind,
 };
+use qsc_data_structures::index_map::IndexMap;
 use qsc_fir::{
     fir::{BlockId, ExprId, LocalVarId, StmtId},
     ty::Ty,
@@ -130,7 +131,7 @@ impl GeneratorSetsBuilder {
     /// If a main block ID is provided, it returns the applications generator set representing the block.
     pub fn save_to_package_compute_properties(
         mut self,
-        package_compute_properties: &mut PackageComputeProperties,
+        package_compute_properties: &mut InternalPackageComputeProperties,
         main_block: Option<BlockId>,
     ) -> Option<ApplicationGeneratorSet> {
         // Get the compute properties of the inherent application instance and the non-static parameter applications.
@@ -313,7 +314,7 @@ impl GeneratorSetsBuilder {
     fn save_application_generator_sets(
         inherent_application_compute_properties: &mut ApplicationInstanceComputeProperties,
         dynamic_param_applications_compute_properties: &mut [ParamApplicationComputeProperties],
-        package_compute_properties: &mut PackageComputeProperties,
+        package_compute_properties: &mut InternalPackageComputeProperties,
     ) {
         let input_params_count = dynamic_param_applications_compute_properties.len();
 
@@ -393,7 +394,9 @@ pub struct ApplicationInstance {
     /// The currently active dynamic scopes in the application instance.
     pub active_dynamic_scopes: Vec<ExprId>,
     /// The return expressions throughout the application instance.
-    pub return_expressions: Vec<ExprId>,
+    /// The first ID in the tuple represents the return expression itself.
+    /// The second ID in the tuple represents the returned value expression.
+    pub return_expressions: Vec<(ExprId, ExprId)>,
     /// The return type of the application instance.
     return_type: Ty,
     /// The compute kind of the blocks related to the application instance.
@@ -508,17 +511,35 @@ impl ApplicationInstance {
         // Determine the value kind of the application instance by going through each return expression aggregating
         // their value kind (if any).
         let mut value_kinds = Vec::<ValueKind>::new();
-        for expr_id in self.return_expressions {
-            let expr_compute_kind = self
-                .exprs
-                .get(&expr_id)
-                .expect("expression compute kind should exist");
-            if let ComputeKind::Quantum(quantum_properties) = expr_compute_kind {
-                value_kinds.push(quantum_properties.value_kind);
+        for (return_expr_id, returned_value_expr_id) in self.return_expressions.clone() {
+            let return_expr_compute_kind = self.get_expr_compute_kind(return_expr_id);
+
+            // There are two scenarios in which a value kind is considered, and both of them only happen if the return
+            // expression is quantum.
+            if let ComputeKind::Quantum(return_quantum_properties) = return_expr_compute_kind {
+                let return_value_kind = if return_quantum_properties
+                    .runtime_features
+                    .contains(RuntimeFeatureFlags::ReturnWithinDynamicScope)
+                {
+                    // The return expression happens within a dynamic scope so the value kind is dynamic.
+                    ValueKind::new_dynamic_from_type(&self.return_type)
+                } else {
+                    // What we actually want here is the value kind of the returned value expression.
+                    let returned_value_expr_compute_kind =
+                        self.get_expr_compute_kind(returned_value_expr_id);
+                    let ComputeKind::Quantum(returned_value_quantum_properties) =
+                        returned_value_expr_compute_kind
+                    else {
+                        panic!("returned value expression is expected to be quantum");
+                    };
+                    returned_value_quantum_properties.value_kind
+                };
+                value_kinds.push(return_value_kind);
             }
         }
 
-        // The application instance has a value kind only if at least one of its return expressions was quantum.
+        // An application instance does not always have a value kind, only when there is at least one quantum return
+        // expression.
         let value_kind = if value_kinds.is_empty() {
             None
         } else {
@@ -529,8 +550,8 @@ impl ApplicationInstance {
             };
             let value_kind = value_kinds.iter().fold(
                 initial_value_kind,
-                |aggregated_value_kind, current_value_kind| {
-                    aggregated_value_kind.aggregate(*current_value_kind)
+                |aggregated_value_kind, return_value_kind| {
+                    aggregated_value_kind.aggregate(*return_value_kind)
                 },
             );
             Some(value_kind)
@@ -546,12 +567,12 @@ impl ApplicationInstance {
 }
 
 #[derive(Debug, Default)]
-pub struct LocalsComputeKindMap(FxHashMap<LocalVarId, LocalComputeKind>);
+pub struct LocalsComputeKindMap(IndexMap<LocalVarId, LocalComputeKind>);
 
 impl LocalsLookup for LocalsComputeKindMap {
     fn find(&self, local_var_id: LocalVarId) -> Option<&Local> {
         self.0
-            .get(&local_var_id)
+            .get(local_var_id)
             .map(|local_compute_kind| &local_compute_kind.local)
     }
 }
@@ -560,13 +581,13 @@ impl LocalsComputeKindMap {
     pub fn aggregate_compute_kind(&mut self, local_var_id: LocalVarId, delta: ComputeKind) {
         let local_compute_kind = self
             .0
-            .get_mut(&local_var_id)
+            .get_mut(local_var_id)
             .expect("local compute kind does not exist");
         local_compute_kind.compute_kind = local_compute_kind.compute_kind.aggregate(delta);
     }
 
     pub fn find_local_compute_kind(&self, local_var_id: LocalVarId) -> Option<&LocalComputeKind> {
-        self.0.get(&local_var_id)
+        self.0.get(local_var_id)
     }
 
     pub fn get_local_compute_kind(&self, local_var_id: LocalVarId) -> &LocalComputeKind {

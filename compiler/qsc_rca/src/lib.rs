@@ -324,7 +324,7 @@ impl Display for ApplicationGeneratorSet {
 
 impl ApplicationGeneratorSet {
     #[must_use]
-    pub fn derive_application_compute_kind(&self, args_value_kinds: &[ValueKind]) -> ComputeKind {
+    pub fn generate_application_compute_kind(&self, args_value_kinds: &[ValueKind]) -> ComputeKind {
         assert!(self.dynamic_param_applications.len() == args_value_kinds.len());
         let mut compute_kind = self.inherent;
         for (arg_value_kind, param_application) in args_value_kinds
@@ -749,8 +749,12 @@ bitflags! {
         const DynamicResultAllocation = 1 << 19;
         /// Use of a dynamic index to access or update an array.
         const UseOfDynamicIndex = 1 << 20;
+        /// A return expression withing a dynamic scope.
+        const ReturnWithinDynamicScope = 1 << 21;
+        /// A loop with a dynamic condition.
+        const LoopWithDynamicCondition = 1 << 22;
         /// Use of a closure.
-        const UseOfClosure = 1 << 21;
+        const UseOfClosure = 1 << 23;
     }
 }
 
@@ -803,28 +807,28 @@ impl RuntimeFeatureFlags {
             runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::UseOfDynamicUdt) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::UseOfDynamicArrowFunction) {
             runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::UseOfDynamicArrowOperation) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::CallToCyclicFunctionWithDynamicArg) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::CyclicOperationSpec) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::CallToCyclicOperation) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::CallToDynamicCallee) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::CallToUnresolvedCallee) {
-            runtume_capabilities |= RuntimeCapabilityFlags::all();
+            runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
         }
         if self.contains(RuntimeFeatureFlags::ForwardBranchingOnDynamicValue) {
             runtume_capabilities |= RuntimeCapabilityFlags::ForwardBranching;
@@ -837,6 +841,12 @@ impl RuntimeFeatureFlags {
         }
         if self.contains(RuntimeFeatureFlags::UseOfDynamicIndex) {
             runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;
+        }
+        if self.contains(RuntimeFeatureFlags::ReturnWithinDynamicScope) {
+            runtume_capabilities |= RuntimeCapabilityFlags::ForwardBranching;
+        }
+        if self.contains(RuntimeFeatureFlags::LoopWithDynamicCondition) {
+            runtume_capabilities |= RuntimeCapabilityFlags::BackwardsBranching;
         }
         if self.contains(RuntimeFeatureFlags::UseOfClosure) {
             runtume_capabilities |= RuntimeCapabilityFlags::HigherLevelConstructs;

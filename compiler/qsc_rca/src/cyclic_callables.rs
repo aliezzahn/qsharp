@@ -4,7 +4,7 @@
 use crate::{
     common::{derive_callable_input_params, InputParam, LocalSpecId},
     cycle_detection::CycleDetector,
-    scaffolding::PackageStoreComputeProperties,
+    scaffolding::InternalPackageStoreComputeProperties,
     ApplicationGeneratorSet, ArrayParamApplication, ComputeKind, ParamApplication,
     RuntimeFeatureFlags, ValueKind,
 };
@@ -19,7 +19,7 @@ use qsc_fir::{
 
 pub struct Analyzer<'a> {
     package_store: &'a PackageStore,
-    package_store_compute_properties: PackageStoreComputeProperties,
+    package_store_compute_properties: InternalPackageStoreComputeProperties,
     current_package: Option<PackageId>,
     current_application_generator_set: Option<ApplicationGeneratorSet>,
 }
@@ -27,7 +27,7 @@ pub struct Analyzer<'a> {
 impl<'a> Analyzer<'a> {
     pub fn new(
         package_store: &'a PackageStore,
-        package_store_compute_properties: PackageStoreComputeProperties,
+        package_store_compute_properties: InternalPackageStoreComputeProperties,
     ) -> Self {
         Self {
             package_store,
@@ -37,14 +37,17 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    pub fn analyze_all(mut self) -> PackageStoreComputeProperties {
+    pub fn analyze_all(mut self) -> InternalPackageStoreComputeProperties {
         for (package_id, package) in self.package_store {
             self.analyze_package_internal(package_id, package);
         }
         self.package_store_compute_properties
     }
 
-    pub fn analyze_package(mut self, package_id: PackageId) -> PackageStoreComputeProperties {
+    pub fn analyze_package(
+        mut self,
+        package_id: PackageId,
+    ) -> InternalPackageStoreComputeProperties {
         let package = self.package_store.get(package_id);
         self.analyze_package_internal(package_id, package);
         self.package_store_compute_properties
@@ -84,12 +87,10 @@ impl<'a> Analyzer<'a> {
                     &callable.output,
                 )
             }
-            CallableKind::Operation => {
-                Self::create_operation_specialization_application_generator_set(
-                    &input_params,
-                    &callable.output,
-                )
-            }
+            CallableKind::Operation => create_operation_specialization_application_generator_set(
+                &input_params,
+                &callable.output,
+            ),
         };
 
         // Find the specialization.
@@ -160,41 +161,6 @@ impl<'a> Analyzer<'a> {
         ApplicationGeneratorSet {
             // Functions are inherently classically pure.
             inherent: ComputeKind::Classical,
-            dynamic_param_applications,
-        }
-    }
-
-    fn create_operation_specialization_application_generator_set(
-        input_params: &Vec<InputParam>,
-        output_type: &Ty,
-    ) -> ApplicationGeneratorSet {
-        // Since operations can allocate and measure qubits freely, we assume its compute kind is quantum and that their
-        // value kind is dynamic.
-        let value_kind = ValueKind::new_dynamic_from_type(output_type);
-        let inherent_compute_kind = ComputeKind::new_with_runtime_features(
-            RuntimeFeatureFlags::CyclicOperationSpec,
-            value_kind,
-        );
-
-        // The compute kind of a cyclic operation for all dynamic parameter applications is the same as its inherent
-        // compute kind.
-        let mut dynamic_param_applications =
-            Vec::<ParamApplication>::with_capacity(input_params.len());
-        for param in input_params {
-            // Create a parameter application depending on the parameter type.
-            let param_application = match &param.ty {
-                Ty::Array(_) => ParamApplication::Array(ArrayParamApplication {
-                    static_content_dynamic_size: inherent_compute_kind,
-                    dynamic_content_static_size: inherent_compute_kind,
-                    dynamic_content_dynamic_size: inherent_compute_kind,
-                }),
-                _ => ParamApplication::Element(inherent_compute_kind),
-            };
-            dynamic_param_applications.push(param_application);
-        }
-
-        ApplicationGeneratorSet {
-            inherent: inherent_compute_kind,
             dynamic_param_applications,
         }
     }
@@ -296,5 +262,39 @@ impl<'a> Visitor<'a> for Analyzer<'a> {
         let application_generator_set = self.get_current_application_generator_set().clone();
         self.package_store_compute_properties
             .insert_stmt((package_id, stmt).into(), application_generator_set);
+    }
+}
+
+fn create_operation_specialization_application_generator_set(
+    input_params: &Vec<InputParam>,
+    output_type: &Ty,
+) -> ApplicationGeneratorSet {
+    // Since operations can allocate and measure qubits freely, we assume its compute kind is quantum and that their
+    // value kind is dynamic.
+    let value_kind = ValueKind::new_dynamic_from_type(output_type);
+    let inherent_compute_kind = ComputeKind::new_with_runtime_features(
+        RuntimeFeatureFlags::CyclicOperationSpec,
+        value_kind,
+    );
+
+    // The compute kind of a cyclic operation for all dynamic parameter applications is the same as its inherent
+    // compute kind.
+    let mut dynamic_param_applications = Vec::<ParamApplication>::with_capacity(input_params.len());
+    for param in input_params {
+        // Create a parameter application depending on the parameter type.
+        let param_application = match &param.ty {
+            Ty::Array(_) => ParamApplication::Array(ArrayParamApplication {
+                static_content_dynamic_size: inherent_compute_kind,
+                dynamic_content_static_size: inherent_compute_kind,
+                dynamic_content_dynamic_size: inherent_compute_kind,
+            }),
+            _ => ParamApplication::Element(inherent_compute_kind),
+        };
+        dynamic_param_applications.push(param_application);
+    }
+
+    ApplicationGeneratorSet {
+        inherent: inherent_compute_kind,
+        dynamic_param_applications,
     }
 }
