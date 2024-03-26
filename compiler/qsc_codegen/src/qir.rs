@@ -6,8 +6,7 @@ mod rir_utils;
 #[cfg(test)]
 mod tests;
 
-use qsc_rir::rir;
-use rustc_hash::FxHashSet;
+use qsc_rir::{rir, utils::get_all_block_successors};
 
 /// A trait for converting a type into QIR of type `T`.
 /// This can be used to generate QIR strings or other representations.
@@ -154,40 +153,6 @@ impl ToQir<String> for rir::Block {
     }
 }
 
-fn get_block_successors(block: &rir::Block) -> Vec<rir::BlockId> {
-    let mut successors = Vec::new();
-    for instr in &block.0 {
-        match instr {
-            rir::Instruction::Jump(target) => {
-                successors.push(*target);
-            }
-            rir::Instruction::Branch(_, target1, target2) => {
-                successors.push(*target1);
-                successors.push(*target2);
-            }
-            _ => {}
-        }
-    }
-    successors
-}
-
-fn get_all_successors(block: rir::BlockId, program: &rir::Program) -> Vec<rir::BlockId> {
-    let mut blocks_to_visit = vec![block];
-    let mut blocks_visited = FxHashSet::default();
-    while let Some(block_id) = blocks_to_visit.pop() {
-        if blocks_visited.contains(&block_id) {
-            continue;
-        }
-        blocks_visited.insert(block_id);
-        let block = program.get_block(block_id);
-        let block_successors = get_block_successors(block);
-        blocks_to_visit.extend(block_successors.clone());
-    }
-    let mut successors = blocks_visited.into_iter().collect::<Vec<_>>();
-    successors.sort_unstable();
-    successors
-}
-
 impl ToQir<String> for rir::Callable {
     fn to_qir(&self, program: &rir::Program) -> String {
         let input_type = self
@@ -210,7 +175,7 @@ impl ToQir<String> for rir::Callable {
             );
         };
         let mut body = String::new();
-        let all_blocks = get_all_successors(entry_id, program);
+        let all_blocks = get_all_block_successors(entry_id, program);
         for block_id in all_blocks {
             let block = program.get_block(block_id);
             body.push_str(&format!(
